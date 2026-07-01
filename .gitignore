@@ -1,0 +1,24 @@
+/target/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Rust build artifacts
+*.rlib
+*.rmeta
+*.profraw
+*.profdata
+flamegraph.svg
+
+# Generated coverage
+/coverage/
+/tarpaulin-report.html
+
+# Editor and OS files
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/

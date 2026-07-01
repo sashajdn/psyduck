@@ -1,0 +1,15 @@
+[package]
+name = "model"
+description = "Llama-style model, KV cache, and decode engine skeleton for Psyduck."
+authors.workspace = true
+edition.workspace = true
+keywords.workspace = true
+publish.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+instrument.workspace = true
+tensor.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "tensor"
+description = "Tensor storage and backend kernel boundaries for Psyduck."
+authors.workspace = true
+edition.workspace = true
+keywords.workspace = true
+publish.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true

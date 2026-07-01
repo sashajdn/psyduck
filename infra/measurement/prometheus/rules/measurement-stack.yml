@@ -1,0 +1,21 @@
+groups:
+  - name: measurement-stack
+    interval: 15s
+    rules:
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus target is down"
+          description: "{{ $labels.job }} target {{ $labels.instance }} has been down for more than 1 minute."
+
+      - alert: PrometheusScrapeNearTimeout
+        expr: scrape_duration_seconds / scrape_timeout_seconds > 0.8
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus scrape is close to timing out"
+          description: "{{ $labels.job }} target {{ $labels.instance }} is using more than 80% of its scrape timeout."

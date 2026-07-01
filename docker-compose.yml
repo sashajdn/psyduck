@@ -1,0 +1,107 @@
+name: psyduck-measurement
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks:
+    - measurement
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  prometheus:
+    <<: *service-defaults
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.5.0}
+    container_name: psyduck-prometheus
+    user: "65534:65534"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_TIME:-15d}
+      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-5GB}
+      - --web.listen-address=0.0.0.0:9090
+      - --web.route-prefix=/
+      - --web.enable-lifecycle
+      - --log.level=${PROMETHEUS_LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - prometheus-data:/prometheus
+      - ./infra/measurement/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/measurement/prometheus/rules:/etc/prometheus/rules:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: ${PROMETHEUS_MEM_LIMIT:-1g}
+    cpus: ${PROMETHEUS_CPUS:-1.0}
+
+  grafana:
+    <<: *service-defaults
+    image: ${GRAFANA_IMAGE:-grafana/grafana:12.0.2}
+    container_name: psyduck-grafana
+    user: "472:0"
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /var/log/grafana:size=64m,mode=0755,uid=472,gid=0
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SERVER_HTTP_ADDR: 0.0.0.0
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_SERVER_DOMAIN: localhost
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3000}/
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-psyduck-local-admin}
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_METRICS_ENABLED: "true"
+      GF_LOG_MODE: console
+      GF_LOG_LEVEL: ${GRAFANA_LOG_LEVEL:-info}
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 5s
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/measurement/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/measurement/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: ${GRAFANA_MEM_LIMIT:-768m}
+    cpus: ${GRAFANA_CPUS:-1.0}
+
+networks:
+  measurement:
+    name: psyduck-measurement
+    driver: bridge
+
+volumes:
+  prometheus-data:
+    name: psyduck-prometheus-data
+  grafana-data:
+    name: psyduck-grafana-data

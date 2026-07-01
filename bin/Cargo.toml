@@ -1,0 +1,17 @@
+[package]
+name = "psyduck"
+description = "CLI entry point for the Psyduck LLM inference performance harness."
+authors.workspace = true
+edition.workspace = true
+keywords.workspace = true
+publish.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+clap.workspace = true
+instrument.workspace = true
+model.workspace = true
+tensor.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
