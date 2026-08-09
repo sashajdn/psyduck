@@ -34,6 +34,7 @@ tracing-subscriber = { version = "0.3.22" }
 # local crates
 tensor = { path = "tensor" }
 model = { path = "model" }
+kvcache = { path = "kvcache" }
 instrument = { path = "instrument" }
 instrument-macros = { path = "instrument/macros" }
 
