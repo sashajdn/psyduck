@@ -17,6 +17,8 @@ flamegraph.svg
 /tarpaulin-report.html
 
 # Editor and OS files
+.clangd
+.nvimlog
 .DS_Store
 *.swp
 *.swo

@@ -19,6 +19,7 @@ resolver = "3"
 [workspace.dependencies]
 clap = { version = "4.5.60", features = ["derive"] }
 convert_case = "0.8.0"
+cudarc = { version = "0.19.8", default-features = false, features = ["std", "dynamic-loading", "cuda-version-from-build-system", "fallback-latest"] }
 opentelemetry = "0.31.0"
 opentelemetry-prometheus = { version = "0.31.0", features = ["prometheus-encoding"] }
 opentelemetry_sdk = "0.31.0"
