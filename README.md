@@ -1,3 +1,7 @@
+# Psyduck
+
+making GPUs go fast from scratch
+
 # Plan
 
 1. Validate add / mul on Nvidia GPU via rust

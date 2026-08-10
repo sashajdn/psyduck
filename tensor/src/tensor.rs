@@ -3,8 +3,14 @@ use std::ops::{Add, Mul, Sub};
 use crate::Shape;
 
 pub trait Tensor<F, const R: usize> {
-    fn zeros(shape: Shape<R>) -> Self;
     fn shape(&self) -> &Shape<R>;
+}
+
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+#[error("tensor element count mismatch: expected {expected}, actual {actual}")]
+pub struct ElementCountMismatch {
+    pub expected: usize,
+    pub actual: usize,
 }
 
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
@@ -38,38 +44,6 @@ pub trait MatrixTensor<F>: Tensor<F, 2> {
 
 impl<F, T: Tensor<F, 2>> MatrixTensor<F> for T {}
 
-pub struct NaiveTensor<F, const R: usize> {
-    inner: Vec<F>,
-    shape: Shape<R>,
-}
-
-impl<F: QuantizedFp, const R: usize> NaiveTensor<F, R> {
-    #[allow(dead_code)]
-    #[inline]
-    pub fn as_slice(&self) -> &[F] {
-        &self.inner
-    }
-
-    #[allow(dead_code)]
-    #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [F] {
-        &mut self.inner
-    }
-}
-
-impl<F: QuantizedFp, const R: usize> Tensor<F, R> for NaiveTensor<F, R> {
-    #[inline]
-    fn zeros(shape: Shape<R>) -> Self {
-        let inner = (0..shape.numel()).map(|_| F::zero()).collect();
-        Self { inner, shape }
-    }
-
-    #[inline]
-    fn shape(&self) -> &Shape<R> {
-        &self.shape
-    }
-}
-
 pub trait QuantizedFp: Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> {
     fn zero() -> Self;
 }
@@ -91,6 +65,7 @@ impl QuantizedFp for f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NaiveTensor;
 
     #[test]
     fn validates_matmul_shapes() {
