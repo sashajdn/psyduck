@@ -1,3 +1,5 @@
+use std::ops::{Add, Mul, Sub};
+
 use crate::Shape;
 
 pub trait Tensor<F, const R: usize> {
@@ -22,6 +24,16 @@ pub trait MatrixTensor<F>: Tensor<F, 2> {
                 rhs: rhs.shape().dims().to_vec(),
             })
     }
+
+    #[inline]
+    fn validate_add_shape<T: Tensor<F, 2>>(&self, rhs: &T) -> Result<(), ShapeMismatch> {
+        (self.shape().dims() == rhs.shape().dims())
+            .then_some(())
+            .ok_or_else(|| ShapeMismatch {
+                lhs: self.shape().dims().to_vec(),
+                rhs: rhs.shape().dims().to_vec(),
+            })
+    }
 }
 
 impl<F, T: Tensor<F, 2>> MatrixTensor<F> for T {}
@@ -31,7 +43,7 @@ pub struct NaiveTensor<F, const R: usize> {
     shape: Shape<R>,
 }
 
-impl<F: QuantizedFp<F>, const R: usize> NaiveTensor<F, R> {
+impl<F: QuantizedFp, const R: usize> NaiveTensor<F, R> {
     #[allow(dead_code)]
     #[inline]
     pub fn as_slice(&self) -> &[F] {
@@ -45,7 +57,7 @@ impl<F: QuantizedFp<F>, const R: usize> NaiveTensor<F, R> {
     }
 }
 
-impl<F: QuantizedFp<F>, const R: usize> Tensor<F, R> for NaiveTensor<F, R> {
+impl<F: QuantizedFp, const R: usize> Tensor<F, R> for NaiveTensor<F, R> {
     #[inline]
     fn zeros(shape: Shape<R>) -> Self {
         let inner = (0..shape.numel()).map(|_| F::zero()).collect();
@@ -58,18 +70,18 @@ impl<F: QuantizedFp<F>, const R: usize> Tensor<F, R> for NaiveTensor<F, R> {
     }
 }
 
-pub trait QuantizedFp<T> {
-    fn zero() -> T;
+pub trait QuantizedFp: Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> {
+    fn zero() -> Self;
 }
 
-impl QuantizedFp<f64> for f64 {
+impl QuantizedFp for f64 {
     #[inline]
     fn zero() -> Self {
         0.0
     }
 }
 
-impl QuantizedFp<f32> for f32 {
+impl QuantizedFp for f32 {
     #[inline]
     fn zero() -> Self {
         0.0
