@@ -22,7 +22,7 @@ pub struct ShapeMismatch {
 
 pub trait MatrixTensor<F>: Tensor<F, 2> {
     #[inline]
-    fn validate_matmul_shape<T: Tensor<F, 2>>(&self, rhs: &T) -> Result<(), ShapeMismatch> {
+    fn validate_matmul_shape_with<T: Tensor<F, 2>>(&self, rhs: &T) -> Result<(), ShapeMismatch> {
         (self.shape().cols() == rhs.shape().rows())
             .then_some(())
             .ok_or_else(|| ShapeMismatch {
@@ -32,7 +32,7 @@ pub trait MatrixTensor<F>: Tensor<F, 2> {
     }
 
     #[inline]
-    fn validate_add_shape<T: Tensor<F, 2>>(&self, rhs: &T) -> Result<(), ShapeMismatch> {
+    fn validate_add_shape_with<T: Tensor<F, 2>>(&self, rhs: &T) -> Result<(), ShapeMismatch> {
         (self.shape().dims() == rhs.shape().dims())
             .then_some(())
             .ok_or_else(|| ShapeMismatch {
@@ -73,9 +73,9 @@ mod tests {
         let compatible_rhs = NaiveTensor::<f32, 2>::zeros(Shape::new([3, 4]));
         let incompatible_rhs = NaiveTensor::<f32, 2>::zeros(Shape::new([4, 3]));
 
-        assert_eq!(lhs.validate_matmul_shape(&compatible_rhs), Ok(()));
+        assert_eq!(lhs.validate_matmul_shape_with(&compatible_rhs), Ok(()));
         assert_eq!(
-            lhs.validate_matmul_shape(&incompatible_rhs),
+            lhs.validate_matmul_shape_with(&incompatible_rhs),
             Err(ShapeMismatch {
                 lhs: vec![2, 3],
                 rhs: vec![4, 3],

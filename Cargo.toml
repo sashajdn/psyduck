@@ -9,6 +9,7 @@ version = "0.1.0"
 [workspace]
 members = [
     "bin",
+    "kernel",
     "model",
     "tensor",
     "instrument",
@@ -33,6 +34,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22" }
 
 # local crates
+kernel = { path = "kernel" }
 tensor = { path = "tensor" }
 model = { path = "model" }
 kvcache = { path = "kvcache" }

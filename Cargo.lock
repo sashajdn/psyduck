@@ -284,6 +284,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel"
+version = "0.1.0"
+dependencies = [
+ "cudarc",
+ "instrument",
+ "tensor",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -332,6 +343,7 @@ version = "0.1.0"
 dependencies = [
  "cudarc",
  "instrument",
+ "kernel",
  "tensor",
  "thiserror 2.0.18",
  "tracing",
@@ -502,6 +514,7 @@ name = "psyduck"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "cudarc",
  "instrument",
  "model",
  "tensor",
