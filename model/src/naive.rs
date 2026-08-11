@@ -58,8 +58,8 @@ impl<F: QuantizedFp> ModelBackend<F> for NaiveModelBackend<F> {
         b: &Self::Tensor<2>,
         target: &mut Self::Tensor<2>,
     ) -> Result<(), ModelError> {
-        a.validate_add_shape(b)?;
-        a.validate_add_shape(target)?;
+        a.validate_add_shape_with(b)?;
+        a.validate_add_shape_with(target)?;
 
         for ((a, b), output) in a
             .as_slice()

@@ -1,24 +1,30 @@
 use std::sync::Arc;
 
-use cudarc::driver::{CudaContext, CudaStream, DeviceRepr, ValidAsZeroBits};
-use tensor::{CudaTensor, NaiveTensor, QuantizedFp, Tensor};
+use cudarc::driver::{
+    CudaContext, CudaStream, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits,
+};
+use kernel::{CudaKernels, Kernel};
+use tensor::{CudaTensor, MatrixTensor, NaiveTensor, QuantizedFp, Tensor};
 
 use crate::model::{ModelBackend, ModelError};
 
 #[derive(Debug, Clone)]
 pub struct CudaModelBackend<F: DeviceRepr> {
     stream: Arc<CudaStream>,
+    kernels: CudaKernels,
     _phantom: std::marker::PhantomData<F>,
 }
 
 impl<F: DeviceRepr + QuantizedFp> CudaModelBackend<F> {
-    pub fn new(context: Arc<CudaContext>) -> Self {
+    pub fn new(context: Arc<CudaContext>) -> Result<Self, ModelError> {
+        let kernels = CudaKernels::load(&context, vec![kernel::Kernel::AddF32])?;
         let stream = context.default_stream();
 
-        Self {
+        Ok(Self {
             stream,
+            kernels,
             _phantom: std::marker::PhantomData,
-        }
+        })
     }
 }
 
@@ -28,6 +34,7 @@ where
 {
     type Tensor<const R: usize> = CudaTensor<F, R>;
 
+    /// Uploads a tensor from the host to the device.
     fn upload<const R: usize>(
         &self,
         source: &NaiveTensor<F, R>,
@@ -36,6 +43,7 @@ where
         Ok(CudaTensor::from_cuda_slice(buffer, source.shape().clone())?)
     }
 
+    // Downloads a tensor from the device to the host.
     fn download<const R: usize>(
         &self,
         source: &Self::Tensor<R>,
@@ -58,15 +66,45 @@ where
         _b: &Self::Tensor<2>,
         _target: &mut Self::Tensor<2>,
     ) -> Result<(), crate::model::ModelError> {
-        todo!()
+        unimplemented!("try_matmul unimplemented to CudaBackend")
     }
 
     fn try_add(
         &self,
-        _a: &Self::Tensor<2>,
-        _b: &Self::Tensor<2>,
-        _target: &mut Self::Tensor<2>,
+        a: &Self::Tensor<2>,
+        b: &Self::Tensor<2>,
+        target: &mut Self::Tensor<2>,
     ) -> Result<(), crate::model::ModelError> {
-        todo!()
+        // Validate the tensor shapes.
+        a.validate_add_shape_with(b)?;
+        a.validate_add_shape_with(target)?;
+
+        // Get the preloaded kernel.
+        let kernel = self.kernels.get(Kernel::AddF32)?;
+        let count =
+            u32::try_from(a.as_cuda_slice().len()).map_err(|_| ModelError::TensorTooLarge {
+                elements: a.as_cuda_slice().len(),
+            })?;
+
+        // Build the launch config
+        let config = LaunchConfig::for_num_elems(count);
+
+        // SAFETY:
+        // - `kernel` refers to `add_f32`.
+        // - Arguments match the CUDA ABI and declaration order.
+        // - All buffers contain at least `count` f32 elements.
+        // - `target` is exclusively borrowed for the write.
+        // - The kernel checks `index < count`.
+        unsafe {
+            self.stream
+                .launch_builder(kernel)
+                .arg(a.as_cuda_slice())
+                .arg(b.as_cuda_slice())
+                .arg(target.as_cuda_slice_mut())
+                .arg(&count)
+                .launch(config)?;
+        }
+
+        Ok(())
     }
 }

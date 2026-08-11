@@ -1,6 +1,6 @@
 [package]
-name = "model"
-description = "Llama-style model, KV cache, and decode engine skeleton for Psyduck."
+name = "kernel"
+description = "CUDA kernel sources and entry-point metadata for Psyduck."
 authors.workspace = true
 edition.workspace = true
 keywords.workspace = true
@@ -11,7 +11,6 @@ version.workspace = true
 [dependencies]
 cudarc = { workspace = true, features = ["driver", "nvrtc", "cublas"] }
 instrument.workspace = true
-kernel.workspace = true
 tensor.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
