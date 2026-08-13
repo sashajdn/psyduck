@@ -10,7 +10,6 @@ version.workspace = true
 
 [dependencies]
 cudarc = { workspace = true, features = ["driver", "nvrtc", "cublas"] }
-instrument.workspace = true
 tensor.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

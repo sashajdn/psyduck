@@ -3,6 +3,7 @@ use std::sync::Arc;
 use cudarc::driver::{
     CudaContext, CudaStream, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits,
 };
+use instrument::cuda::CudaEventSource;
 use kernel::{CudaKernels, Kernel};
 use tensor::{CudaTensor, MatrixTensor, NaiveTensor, QuantizedFp, Tensor};
 
@@ -25,6 +26,12 @@ impl<F: DeviceRepr + QuantizedFp> CudaModelBackend<F> {
             kernels,
             _phantom: std::marker::PhantomData,
         })
+    }
+}
+
+impl<F: DeviceRepr> CudaEventSource for CudaModelBackend<F> {
+    fn cuda_stream(&self) -> &CudaStream {
+        self.stream.as_ref()
     }
 }
 

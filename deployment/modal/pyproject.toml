@@ -1,0 +1,23 @@
+[project]
+name = "psyduck-modal"
+version = "0.1.0"
+description = "Modal control plane for Psyduck GPU experiments."
+requires-python = "==3.12.13"
+dependencies = [
+    "modal==1.5.3",
+]
+
+[dependency-groups]
+dev = [
+    "ruff==0.12.3",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["B", "E4", "E7", "E9", "F", "I", "SIM", "UP"]
