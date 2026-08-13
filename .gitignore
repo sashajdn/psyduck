@@ -1,4 +1,10 @@
 /target/
+**/.venv/
+**/__pycache__/
+**/.ruff_cache/
+/deployment/modal/.tools/
+/deployment/modal/.cache/
+*.py[cod]
 
 # Local environment
 .env

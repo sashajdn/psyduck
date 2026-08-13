@@ -1,3 +1,5 @@
+pub mod cuda;
+
 pub use opentelemetry;
 pub use opentelemetry_prometheus;
 pub use opentelemetry_sdk;

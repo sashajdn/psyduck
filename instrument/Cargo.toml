@@ -9,6 +9,7 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
+cudarc = { workspace = true, features = ["driver"] }
 instrument-macros = { workspace = true, optional = true }
 opentelemetry.workspace = true
 opentelemetry-prometheus.workspace = true

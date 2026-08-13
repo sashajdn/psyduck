@@ -247,6 +247,7 @@ dependencies = [
 name = "instrument"
 version = "0.1.0"
 dependencies = [
+ "cudarc",
  "instrument-macros",
  "opentelemetry",
  "opentelemetry-prometheus",
@@ -260,6 +261,7 @@ name = "instrument-macros"
 version = "0.1.0"
 dependencies = [
  "convert_case",
+ "cudarc",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
@@ -288,7 +290,6 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "cudarc",
- "instrument",
  "tensor",
  "thiserror 2.0.18",
  "tracing",
