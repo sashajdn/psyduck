@@ -11,8 +11,8 @@ from pathlib import Path
 
 import modal
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-REMOTE_REPOSITORY = "/workspace"
+REMOTE_REPOSITORY = Path("/workspace")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3] if modal.is_local() else REMOTE_REPOSITORY
 RUST_BINARY_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
@@ -92,7 +92,7 @@ app = modal.App(settings.app_name, image=image)
 
 @app.function(gpu=settings.gpu, timeout=settings.timeout_seconds)
 def run_rust_binary(rust_binary: str, gpu: str) -> dict[str, object]:
-    """Run the image's selected Rust binary and return its captured output."""
+    """Run the selected Rust binary and return its structured validation result."""
     executable = Path(REMOTE_REPOSITORY) / "target" / "release" / rust_binary
     completed = subprocess.run(
         [executable],
@@ -101,23 +101,29 @@ def run_rust_binary(rust_binary: str, gpu: str) -> dict[str, object]:
         text=True,
     )
 
-    if completed.stdout:
-        print(completed.stdout, end="")
     if completed.stderr:
         print(completed.stderr, end="")
+
+    try:
+        validation = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"{rust_binary} did not emit valid JSON") from error
+
+    if not isinstance(validation, dict):
+        raise RuntimeError(f"{rust_binary} emitted a non-object JSON result")
 
     completed.check_returncode()
     return {
         "rust_binary": rust_binary,
         "gpu": gpu,
         "exit_code": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
+        "validation": validation,
     }
 
 
 @app.local_entrypoint()
 def main() -> None:
     """Launch the selected binary and render a stable local result."""
+    print("Launching: ", settings)
     result = run_rust_binary.remote(settings.rust_binary, settings.gpu)
     print(json.dumps(result, indent=2, sort_keys=True))

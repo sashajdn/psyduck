@@ -1,6 +1,5 @@
 set dotenv-load := true
 
-modal_gpu := "L4"
 modal_rust_toolchain := "1.96.0"
 modal_uv_cache := "./deployment/modal/.cache/uv"
 modal_uv := "./deployment/modal/.tools/bin/uv"
@@ -42,8 +41,8 @@ configure-modal:
 # Re-synchronize the environment after dependency changes.
 modal-sync: configure-modal
 
-# Run any Rust binary on a Modal GPU.
-modal-run rust_bin:
+# Run any Rust binary on an explicitly selected Modal GPU.
+modal-run rust_bin gpu:
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -58,15 +57,15 @@ modal-run rust_bin:
     fi
 
     export PSYDUCK_MODAL_RUST_BIN="{{ rust_bin }}"
-    export PSYDUCK_MODAL_GPU="{{ modal_gpu }}"
+    export PSYDUCK_MODAL_GPU="{{ gpu }}"
     export PSYDUCK_MODAL_RUST_TOOLCHAIN="{{ modal_rust_toolchain }}"
     UV_CACHE_DIR="{{ modal_uv_cache }}" \
         {{ modal_uv }} run --project deployment/modal --locked \
         modal run deployment/modal/psyduck_modal/app.py
 
 # Validate matrix-add parity on a Modal GPU.
-modal-matrix-add:
-    just modal-run gpu_add_validate
+modal-matrix-add-validate:
+    just modal-run gpu_add_validate T4
 
 modal-format:
     UV_CACHE_DIR="{{ modal_uv_cache }}" \
