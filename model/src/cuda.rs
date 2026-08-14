@@ -42,7 +42,7 @@ where
     type Tensor<const R: usize> = CudaTensor<F, R>;
 
     /// Uploads a tensor from the host to the device.
-    fn upload<const R: usize>(
+    fn upload_htod<const R: usize>(
         &self,
         source: &NaiveTensor<F, R>,
     ) -> Result<Self::Tensor<R>, ModelError> {
@@ -51,7 +51,7 @@ where
     }
 
     // Downloads a tensor from the device to the host.
-    fn download<const R: usize>(
+    fn download_dtoh<const R: usize>(
         &self,
         source: &Self::Tensor<R>,
     ) -> Result<NaiveTensor<F, R>, ModelError> {
@@ -67,7 +67,7 @@ where
         Ok(CudaTensor::from_cuda_slice(buffer, shape)?)
     }
 
-    fn try_matmul(
+    fn try_matmul<const BLOCK_X: u32, const BLOCK_Y: u32, const THREADS_PER_BLOCK: u32>(
         &self,
         _a: &Self::Tensor<2>,
         _b: &Self::Tensor<2>,
@@ -76,7 +76,7 @@ where
         unimplemented!("try_matmul unimplemented to CudaBackend")
     }
 
-    fn try_add(
+    fn try_add<const THREADS_PER_BLOCK: u32>(
         &self,
         a: &Self::Tensor<2>,
         b: &Self::Tensor<2>,
@@ -93,8 +93,7 @@ where
                 elements: a.as_cuda_slice().len(),
             })?;
 
-        // Build the launch config
-        let config = LaunchConfig::for_num_elems(count);
+        let config = elementwise_launch_config::<THREADS_PER_BLOCK>(count)?;
 
         // SAFETY:
         // - `kernel` refers to `add_f32`.
@@ -113,5 +112,39 @@ where
         }
 
         Ok(())
+    }
+}
+
+#[inline]
+fn elementwise_launch_config<const THREADS_PER_BLOCK: u32>(
+    element_count: u32,
+) -> Result<LaunchConfig, ModelError> {
+    if THREADS_PER_BLOCK == 0 {
+        return Err(ModelError::InvalidCudaBlockDimensions { x: 0, y: 1, z: 1 });
+    }
+
+    Ok(LaunchConfig {
+        grid_dim: (element_count.div_ceil(THREADS_PER_BLOCK), 1, 1),
+        block_dim: (THREADS_PER_BLOCK, 1, 1),
+        shared_mem_bytes: 0,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::elementwise_launch_config;
+
+    #[test]
+    fn elementwise_launch_config_covers_every_element() {
+        let config = elementwise_launch_config::<256>(1_025).unwrap();
+
+        assert_eq!(config.grid_dim, (5, 1, 1));
+        assert_eq!(config.block_dim, (256, 1, 1));
+        assert_eq!(config.shared_mem_bytes, 0);
+    }
+
+    #[test]
+    fn elementwise_launch_config_rejects_empty_blocks() {
+        assert!(elementwise_launch_config::<0>(1).is_err());
     }
 }

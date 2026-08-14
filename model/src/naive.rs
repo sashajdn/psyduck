@@ -24,14 +24,15 @@ impl<F: QuantizedFp> ModelBackend<F> for NaiveModelBackend<F> {
     type Tensor<const R: usize> = NaiveTensor<F, R>;
 
     #[inline]
-    fn upload<const R: usize>(
+    fn upload_htod<const R: usize>(
         &self,
         source: &NaiveTensor<F, R>,
     ) -> Result<Self::Tensor<R>, ModelError> {
         Ok(source.clone())
     }
 
-    fn download<const R: usize>(
+    #[inline]
+    fn download_dtoh<const R: usize>(
         &self,
         source: &Self::Tensor<R>,
     ) -> Result<NaiveTensor<F, R>, ModelError> {
@@ -43,7 +44,7 @@ impl<F: QuantizedFp> ModelBackend<F> for NaiveModelBackend<F> {
         Ok(NaiveTensor::zeros(shape))
     }
 
-    fn try_matmul(
+    fn try_matmul<const BLOCK_X: u32, const BLOCK_Y: u32, const THREADS_PER_BLOCK: u32>(
         &self,
         _a: &Self::Tensor<2>,
         _b: &Self::Tensor<2>,
@@ -52,7 +53,7 @@ impl<F: QuantizedFp> ModelBackend<F> for NaiveModelBackend<F> {
         unimplemented!("Implement try_matmul");
     }
 
-    fn try_add(
+    fn try_add<const THREADS_PER_BLOCK: u32>(
         &self,
         a: &Self::Tensor<2>,
         b: &Self::Tensor<2>,
@@ -94,7 +95,7 @@ mod tests {
         let mut target = NaiveTensor::zeros(Shape::new([2, 2]));
 
         backend
-            .try_add(&a, &b, &mut target)
+            .try_add::<256>(&a, &b, &mut target)
             .expect("2x2 matrices should be addable");
 
         assert_eq!(target.as_slice(), &[6.0, 8.0, 10.0, 12.0]);
