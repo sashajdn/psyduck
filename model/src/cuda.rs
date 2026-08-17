@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use cudarc::driver::{
-    CudaContext, CudaStream, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits,
+    CudaContext, CudaEvent, CudaStream, DeviceRepr, LaunchConfig, PushKernelArg, ValidAsZeroBits,
+    sys::CUevent_flags,
 };
-use instrument::cuda::CudaEventSource;
+use instrument::operation::{OperationTimer, TimingClock};
 use kernel::{CudaKernels, Kernel};
-use tensor::{CudaTensor, MatrixTensor, NaiveTensor, QuantizedFp, Tensor};
+use tensor::{CudaTensor, HostTensor, MatrixTensor, QuantizedFp, Tensor};
 
 use crate::model::{ModelBackend, ModelError};
 
@@ -29,9 +30,31 @@ impl<F: DeviceRepr + QuantizedFp> CudaModelBackend<F> {
     }
 }
 
-impl<F: DeviceRepr> CudaEventSource for CudaModelBackend<F> {
-    fn cuda_stream(&self) -> &CudaStream {
-        self.stream.as_ref()
+impl<F: DeviceRepr> OperationTimer for CudaModelBackend<F> {
+    type Error = ModelError;
+    type Marker = CudaEvent;
+
+    const CLOCK: TimingClock = TimingClock::CudaStream;
+
+    fn mark(&self) -> Result<Self::Marker, Self::Error> {
+        Ok(self
+            .stream
+            .record_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?)
+    }
+
+    fn elapsed(
+        &self,
+        start: Self::Marker,
+        end: Self::Marker,
+    ) -> Result<std::time::Duration, Self::Error> {
+        let milliseconds = start.elapsed_ms(&end)?;
+        Ok(std::time::Duration::from_secs_f64(
+            f64::from(milliseconds) / 1_000.0,
+        ))
+    }
+
+    fn synchronize(&self) -> Result<(), Self::Error> {
+        Ok(self.stream.synchronize()?)
     }
 }
 
@@ -42,21 +65,21 @@ where
     type Tensor<const R: usize> = CudaTensor<F, R>;
 
     /// Uploads a tensor from the host to the device.
-    fn upload_htod<const R: usize>(
+    fn upload<const R: usize>(
         &self,
-        source: &NaiveTensor<F, R>,
+        source: &HostTensor<F, R>,
     ) -> Result<Self::Tensor<R>, ModelError> {
         let buffer = self.stream.clone_htod(source.as_slice())?;
         Ok(CudaTensor::from_cuda_slice(buffer, source.shape().clone())?)
     }
 
     // Downloads a tensor from the device to the host.
-    fn download_dtoh<const R: usize>(
+    fn download<const R: usize>(
         &self,
         source: &Self::Tensor<R>,
-    ) -> Result<NaiveTensor<F, R>, ModelError> {
+    ) -> Result<HostTensor<F, R>, ModelError> {
         let values = self.stream.clone_dtoh(source.as_cuda_slice())?;
-        Ok(NaiveTensor::from_vec(values, source.shape().clone())?)
+        Ok(HostTensor::from_vec(values, source.shape().clone())?)
     }
 
     fn alloc<const R: usize>(
@@ -67,7 +90,7 @@ where
         Ok(CudaTensor::from_cuda_slice(buffer, shape)?)
     }
 
-    fn try_matmul<const BLOCK_X: u32, const BLOCK_Y: u32, const THREADS_PER_BLOCK: u32>(
+    fn try_matmul(
         &self,
         _a: &Self::Tensor<2>,
         _b: &Self::Tensor<2>,
@@ -76,7 +99,7 @@ where
         unimplemented!("try_matmul unimplemented to CudaBackend")
     }
 
-    fn try_add<const THREADS_PER_BLOCK: u32>(
+    fn try_add(
         &self,
         a: &Self::Tensor<2>,
         b: &Self::Tensor<2>,
@@ -93,7 +116,8 @@ where
                 elements: a.as_cuda_slice().len(),
             })?;
 
-        let config = elementwise_launch_config::<THREADS_PER_BLOCK>(count)?;
+        // Build launch config.
+        let config = elementwise_launch_config::<256>(count)?;
 
         // SAFETY:
         // - `kernel` refers to `add_f32`.

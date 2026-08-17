@@ -11,6 +11,7 @@ version.workspace = true
 [dependencies]
 clap.workspace = true
 cudarc = { workspace = true, features = ["driver"] }
+generator.workspace = true
 instrument.workspace = true
 model.workspace = true
 serde_json.workspace = true

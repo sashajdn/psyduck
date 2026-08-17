@@ -9,6 +9,7 @@ version = "0.1.0"
 [workspace]
 members = [
     "bin",
+    "generator",
     "kernel",
     "model",
     "tensor",
@@ -21,6 +22,7 @@ resolver = "3"
 clap = { version = "4.5.60", features = ["derive"] }
 convert_case = "0.8.0"
 cudarc = { version = "0.19.8", default-features = false, features = ["std", "dynamic-loading", "cuda-version-from-build-system", "fallback-latest"] }
+rand = "0.9.4"
 opentelemetry = "0.31.0"
 opentelemetry-prometheus = { version = "0.31.0", features = ["prometheus-encoding"] }
 opentelemetry_sdk = "0.31.0"
@@ -29,6 +31,8 @@ proc-macro2 = "1.0.106"
 prometheus = "0.14.0"
 quote = "1.0.46"
 serde_json = "1.0.149"
+serde = { version = "1.0.228", features = ["derive"] }
+strum = { version = "0.27.2", features = ["derive"] }
 syn = { version = "2.0.118", features = ["clone-impls", "extra-traits", "full", "parsing", "printing", "proc-macro"] }
 thiserror = "2.0.18"
 tracing = "0.1.44"
@@ -41,6 +45,7 @@ model = { path = "model" }
 kvcache = { path = "kvcache" }
 instrument = { path = "instrument" }
 instrument-macros = { path = "instrument/macros" }
+generator = { path = "generator" }
 
 [workspace.metadata.cargo-machete]
 ignored = []
