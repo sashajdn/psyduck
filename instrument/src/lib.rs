@@ -1,4 +1,5 @@
-pub mod cuda;
+pub mod benchmark;
+pub mod operation;
 
 pub use opentelemetry;
 pub use opentelemetry_prometheus;

@@ -41,8 +41,8 @@ configure-modal:
 # Re-synchronize the environment after dependency changes.
 modal-sync: configure-modal
 
-# Run any Rust binary on an explicitly selected Modal GPU.
-modal-run rust_bin gpu:
+# Run any Rust binary, with optional JSON-encoded arguments, on a selected Modal GPU.
+modal-run rust_bin gpu rust_args_json="[]":
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -56,7 +56,21 @@ modal-run rust_bin gpu:
         export MODAL_PROFILE="${PSYDUCK_MODAL_PROFILE}"
     fi
 
+    if [[ -z "${PSYDUCK_MODAL_GIT_COMMIT:-}" ]]; then
+        PSYDUCK_MODAL_GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
+        export PSYDUCK_MODAL_GIT_COMMIT
+    fi
+    if [[ -z "${PSYDUCK_MODAL_GIT_DIRTY:-}" ]]; then
+        if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+            PSYDUCK_MODAL_GIT_DIRTY="true"
+        else
+            PSYDUCK_MODAL_GIT_DIRTY="false"
+        fi
+        export PSYDUCK_MODAL_GIT_DIRTY
+    fi
+
     export PSYDUCK_MODAL_RUST_BIN="{{ rust_bin }}"
+    export PSYDUCK_MODAL_RUST_ARGS_JSON='{{ rust_args_json }}'
     export PSYDUCK_MODAL_GPU="{{ gpu }}"
     export PSYDUCK_MODAL_RUST_TOOLCHAIN="{{ modal_rust_toolchain }}"
     UV_CACHE_DIR="{{ modal_uv_cache }}" \
@@ -66,6 +80,79 @@ modal-run rust_bin gpu:
 # Validate matrix-add parity on a Modal GPU.
 modal-matrix-add-validate:
     just modal-run gpu_add_validate T4
+
+# Run matmul locally on the host or remotely on a Modal T4.
+# Omit N and K for a square M x M multiplication.
+matmul target="host" m="512" n="" k="" report_dir="" operations="1" warmup="3" sample_every="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    target="{{ target }}"
+    m="{{ m }}"
+    n="{{ n }}"
+    k="{{ k }}"
+    report_dir="{{ report_dir }}"
+    operations="{{ operations }}"
+    warmup="{{ warmup }}"
+    sample_every="{{ sample_every }}"
+    n="${n:-${m}}"
+    k="${k:-${m}}"
+
+    for dimension in "${m}" "${n}" "${k}"; do
+        case "${dimension}" in
+            4|8|16|32|64|128|256|512|1024|2048|4096) ;;
+            *)
+                echo "unsupported matrix dimension: ${dimension} (expected 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, or 4096)" >&2
+                exit 2
+                ;;
+        esac
+    done
+
+    for value in "${operations}" "${sample_every}"; do
+        if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "operations and sample_every must be positive integers" >&2
+            exit 2
+        fi
+    done
+    if [[ ! "${warmup}" =~ ^[0-9]+$ ]]; then
+        echo "warmup must be a non-negative integer" >&2
+        exit 2
+    fi
+
+    case "${target}" in
+        host)
+            rust_args=(
+                --target host --m "${m}" --n "${n}" --k "${k}"
+                --operations "${operations}" --warmup "${warmup}"
+                --sample-every "${sample_every}"
+            )
+            if [[ -n "${report_dir}" ]]; then
+                rust_args+=(--report-dir "${report_dir}")
+            fi
+            cargo run --release --bin matmul -- "${rust_args[@]}"
+            ;;
+        device)
+            rust_args=(
+                --target device --m "${m}" --n "${n}" --k "${k}"
+                --operations "${operations}" --warmup "${warmup}"
+                --sample-every "${sample_every}"
+            )
+            if [[ -n "${report_dir}" ]]; then
+                rust_args+=(--report-dir "${report_dir}")
+            fi
+            rust_args_json="$(
+                UV_CACHE_DIR="{{ modal_uv_cache }}" \
+                    {{ modal_uv }} run --project deployment/modal --locked \
+                    python -c 'import json, sys; print(json.dumps(sys.argv[1:]))' \
+                    "${rust_args[@]}"
+            )"
+            just modal-run matmul T4 "${rust_args_json}"
+            ;;
+        *)
+            echo "unsupported matmul target: ${target} (expected host or device)" >&2
+            exit 2
+            ;;
+    esac
 
 modal-format:
     UV_CACHE_DIR="{{ modal_uv_cache }}" \

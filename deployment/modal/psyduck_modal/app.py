@@ -20,6 +20,11 @@ def _environment(name: str, default: str) -> str:
     return os.environ.get(f"PSYDUCK_MODAL_{name}", default)
 
 
+def _optional_environment(name: str) -> str | None:
+    value = os.environ.get(f"PSYDUCK_MODAL_{name}")
+    return value if value else None
+
+
 def _positive_integer(name: str, default: int) -> int:
     raw_value = _environment(name, str(default))
     try:
@@ -32,11 +37,26 @@ def _positive_integer(name: str, default: int) -> int:
     return value
 
 
+def _rust_arguments() -> tuple[str, ...]:
+    raw_value = _environment("RUST_ARGS_JSON", "[]")
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError as error:
+        raise ValueError("PSYDUCK_MODAL_RUST_ARGS_JSON must be valid JSON") from error
+
+    if not isinstance(value, list) or not all(isinstance(argument, str) for argument in value):
+        raise ValueError("PSYDUCK_MODAL_RUST_ARGS_JSON must be a JSON array of strings")
+    return tuple(value)
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str
     cuda_image: str
+    git_commit: str | None
+    git_dirty: str | None
     gpu: str
+    rust_arguments: tuple[str, ...]
     rust_binary: str
     rust_toolchain: str
     timeout_seconds: int
@@ -52,7 +72,10 @@ class Settings:
         return cls(
             app_name=_environment("APP_NAME", "psyduck"),
             cuda_image=_environment("CUDA_IMAGE", "nvidia/cuda:12.8.1-devel-ubuntu24.04"),
+            git_commit=_optional_environment("GIT_COMMIT"),
+            git_dirty=_optional_environment("GIT_DIRTY"),
             gpu=_environment("GPU", "L4"),
+            rust_arguments=_rust_arguments(),
             rust_binary=rust_binary,
             rust_toolchain=_environment("RUST_TOOLCHAIN", "1.96.0"),
             timeout_seconds=_positive_integer("TIMEOUT_SECONDS", 600),
@@ -79,6 +102,7 @@ image = (
     .add_local_file(REPOSITORY_ROOT / "Cargo.toml", f"{REMOTE_REPOSITORY}/Cargo.toml", copy=True)
     .add_local_file(REPOSITORY_ROOT / "Cargo.lock", f"{REMOTE_REPOSITORY}/Cargo.lock", copy=True)
     .add_local_dir(REPOSITORY_ROOT / "bin", f"{REMOTE_REPOSITORY}/bin", copy=True)
+    .add_local_dir(REPOSITORY_ROOT / "generator", f"{REMOTE_REPOSITORY}/generator", copy=True)
     .add_local_dir(REPOSITORY_ROOT / "instrument", f"{REMOTE_REPOSITORY}/instrument", copy=True)
     .add_local_dir(REPOSITORY_ROOT / "kernel", f"{REMOTE_REPOSITORY}/kernel", copy=True)
     .add_local_dir(REPOSITORY_ROOT / "model", f"{REMOTE_REPOSITORY}/model", copy=True)
@@ -91,13 +115,25 @@ app = modal.App(settings.app_name, image=image)
 
 
 @app.function(gpu=settings.gpu, timeout=settings.timeout_seconds)
-def run_rust_binary(rust_binary: str, gpu: str) -> dict[str, object]:
+def run_rust_binary(
+    rust_binary: str,
+    gpu: str,
+    rust_arguments: tuple[str, ...],
+    git_commit: str | None,
+    git_dirty: str | None,
+) -> dict[str, object]:
     """Run the selected Rust binary and return its structured validation result."""
     executable = Path(REMOTE_REPOSITORY) / "target" / "release" / rust_binary
+    environment = os.environ.copy()
+    if git_commit:
+        environment["PSYDUCK_GIT_COMMIT"] = git_commit
+    if git_dirty:
+        environment["PSYDUCK_GIT_DIRTY"] = git_dirty
     completed = subprocess.run(
-        [executable],
+        [executable, *rust_arguments],
         check=False,
         capture_output=True,
+        env=environment,
         text=True,
     )
 
@@ -115,6 +151,7 @@ def run_rust_binary(rust_binary: str, gpu: str) -> dict[str, object]:
     completed.check_returncode()
     return {
         "rust_binary": rust_binary,
+        "rust_arguments": rust_arguments,
         "gpu": gpu,
         "exit_code": completed.returncode,
         "validation": validation,
@@ -125,5 +162,11 @@ def run_rust_binary(rust_binary: str, gpu: str) -> dict[str, object]:
 def main() -> None:
     """Launch the selected binary and render a stable local result."""
     print("Launching: ", settings)
-    result = run_rust_binary.remote(settings.rust_binary, settings.gpu)
+    result = run_rust_binary.remote(
+        settings.rust_binary,
+        settings.gpu,
+        settings.rust_arguments,
+        settings.git_commit,
+        settings.git_dirty,
+    )
     print(json.dumps(result, indent=2, sort_keys=True))

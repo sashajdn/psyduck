@@ -45,10 +45,16 @@ pub trait MatrixTensor<F>: Tensor<F, 2> {
 impl<F, T: Tensor<F, 2>> MatrixTensor<F> for T {}
 
 pub trait QuantizedFp: Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> {
+    fn from_f32(value: f32) -> Self;
     fn zero() -> Self;
 }
 
 impl QuantizedFp for f64 {
+    #[inline]
+    fn from_f32(value: f32) -> Self {
+        Self::from(value)
+    }
+
     #[inline]
     fn zero() -> Self {
         0.0
@@ -56,6 +62,11 @@ impl QuantizedFp for f64 {
 }
 
 impl QuantizedFp for f32 {
+    #[inline]
+    fn from_f32(value: f32) -> Self {
+        value
+    }
+
     #[inline]
     fn zero() -> Self {
         0.0
@@ -65,13 +76,13 @@ impl QuantizedFp for f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NaiveTensor;
+    use crate::HostTensor;
 
     #[test]
     fn validates_matmul_shapes() {
-        let lhs = NaiveTensor::<f32, 2>::zeros(Shape::new([2, 3]));
-        let compatible_rhs = NaiveTensor::<f32, 2>::zeros(Shape::new([3, 4]));
-        let incompatible_rhs = NaiveTensor::<f32, 2>::zeros(Shape::new([4, 3]));
+        let lhs = HostTensor::<f32, 2>::zeros(Shape::new([2, 3]));
+        let compatible_rhs = HostTensor::<f32, 2>::zeros(Shape::new([3, 4]));
+        let incompatible_rhs = HostTensor::<f32, 2>::zeros(Shape::new([4, 3]));
 
         assert_eq!(lhs.validate_matmul_shape_with(&compatible_rhs), Ok(()));
         assert_eq!(
