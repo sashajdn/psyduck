@@ -32,6 +32,27 @@ pub trait MatrixTensor<F>: Tensor<F, 2> {
     }
 
     #[inline]
+    fn validate_matmul_target_with<Rhs, Target>(
+        &self,
+        rhs: &Rhs,
+        target: &Target,
+    ) -> Result<(), ShapeMismatch>
+    where
+        Rhs: Tensor<F, 2>,
+        Target: Tensor<F, 2>,
+    {
+        self.validate_matmul_shape_with(rhs)?;
+
+        let expected = [self.shape().rows(), rhs.shape().cols()];
+        (target.shape().dims() == &expected)
+            .then_some(())
+            .ok_or_else(|| ShapeMismatch {
+                lhs: expected.to_vec(),
+                rhs: target.shape().dims().to_vec(),
+            })
+    }
+
+    #[inline]
     fn validate_add_shape_with<T: Tensor<F, 2>>(&self, rhs: &T) -> Result<(), ShapeMismatch> {
         (self.shape().dims() == rhs.shape().dims())
             .then_some(())
@@ -90,6 +111,26 @@ mod tests {
             Err(ShapeMismatch {
                 lhs: vec![2, 3],
                 rhs: vec![4, 3],
+            })
+        );
+    }
+
+    #[test]
+    fn validates_matmul_target_shape() {
+        let lhs = HostTensor::<f32, 2>::zeros(Shape::new([2, 3]));
+        let rhs = HostTensor::<f32, 2>::zeros(Shape::new([3, 4]));
+        let compatible_target = HostTensor::<f32, 2>::zeros(Shape::new([2, 4]));
+        let incompatible_target = HostTensor::<f32, 2>::zeros(Shape::new([4, 2]));
+
+        assert_eq!(
+            lhs.validate_matmul_target_with(&rhs, &compatible_target),
+            Ok(())
+        );
+        assert_eq!(
+            lhs.validate_matmul_target_with(&rhs, &incompatible_target),
+            Err(ShapeMismatch {
+                lhs: vec![2, 4],
+                rhs: vec![4, 2],
             })
         );
     }

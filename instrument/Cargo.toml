@@ -16,13 +16,13 @@ opentelemetry-prometheus.workspace = true
 opentelemetry_sdk.workspace = true
 prometheus.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 strum.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 opentelemetry.workspace = true
-serde_json.workspace = true
 
 [features]
 default = ["macros"]

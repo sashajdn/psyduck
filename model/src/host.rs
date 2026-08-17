@@ -75,7 +75,7 @@ impl<F: QuantizedFp> ModelBackend<F> for HostModelBackend<F> {
         b: &Self::Tensor<2>,
         c: &mut Self::Tensor<2>,
     ) -> Result<(), ModelError> {
-        a.validate_matmul_shape_with(b)?;
+        a.validate_matmul_target_with(b, c)?;
 
         for i in 0..a.rows() {
             for j in 0..b.cols() {
