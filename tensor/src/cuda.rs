@@ -68,6 +68,18 @@ impl<F: DeviceRepr, const R: usize> CudaTensor<F, R> {
     }
 }
 
+impl<F: DeviceRepr> CudaTensor<F, 2> {
+    #[inline]
+    pub fn rows(&self) -> usize {
+        self.shape().rows()
+    }
+
+    #[inline]
+    pub fn cols(&self) -> usize {
+        self.shape().cols()
+    }
+}
+
 impl<F: DeviceRepr, const R: usize> Tensor<F, R> for CudaTensor<F, R> {
     #[inline]
     fn shape(&self) -> &Shape<R> {

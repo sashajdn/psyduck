@@ -1,20 +1,25 @@
-use std::{error::Error, fs, mem::size_of, num::NonZeroUsize, path::PathBuf, process::Command};
+use std::{error::Error, io, mem::size_of, num::NonZeroUsize, path::PathBuf};
 
-use clap::{Parser, Subcommand, ValueEnum};
-use generator::{Generator, Seed, canonical_matmul_checksum};
+use clap::Parser;
+use cudarc::driver::CudaContext;
+use generator::canonical_matmul_checksum;
 use instrument::{
     benchmark::{
-        Benchmark, BenchmarkConfig, BenchmarkEnvironment, BenchmarkReport, BenchmarkShape,
-        BenchmarkTarget, BenchmarkedOperation, DataType, GitMetadata, HostMetadata, OperationKind,
-        OperationWork,
+        Benchmark, BenchmarkConfig, BenchmarkReport, BenchmarkShape, BenchmarkedOperation,
+        DataType, FlopsConvention, OperationKind, OperationWork,
     },
-    operation::{CaptureConfig, DEFAULT_WARMUP_OPERATIONS},
+    operation::{CaptureConfig, DEFAULT_WARMUP_OPERATIONS, OperationTimer},
 };
 use model::{
+    cuda::CudaModelBackend,
     host::HostModelBackend,
     model::{ModelBackend, ModelError},
 };
-use tensor::{HostTensor, Shape};
+use psyduck::benchmark::{
+    args::{GeneratorArgs, MatrixSize, Target},
+    benchmark_environment, write_report_file,
+};
+use tensor::Shape;
 
 #[derive(Debug, Parser)]
 #[command(about = "Run a matrix multiplication")]
@@ -56,88 +61,6 @@ struct MatmulArgs {
     generator: Option<GeneratorArgs>,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum Target {
-    Host,
-    Device,
-}
-
-impl From<Target> for BenchmarkTarget {
-    fn from(target: Target) -> Self {
-        match target {
-            Target::Host => Self::Host,
-            Target::Device => Self::Device,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum MatrixSize {
-    #[value(name = "4")]
-    N4,
-    #[value(name = "8")]
-    N8,
-    #[value(name = "16")]
-    N16,
-    #[value(name = "32")]
-    N32,
-    #[value(name = "64")]
-    N64,
-    #[value(name = "128")]
-    N128,
-    #[value(name = "256")]
-    N256,
-    #[value(name = "512")]
-    N512,
-    #[value(name = "1024")]
-    N1024,
-    #[value(name = "2048")]
-    N2048,
-    #[value(name = "4096")]
-    N4096,
-}
-
-impl MatrixSize {
-    const fn get(self) -> usize {
-        match self {
-            Self::N4 => 4,
-            Self::N8 => 8,
-            Self::N16 => 16,
-            Self::N32 => 32,
-            Self::N64 => 64,
-            Self::N128 => 128,
-            Self::N256 => 256,
-            Self::N512 => 512,
-            Self::N1024 => 1024,
-            Self::N2048 => 2048,
-            Self::N4096 => 4096,
-        }
-    }
-}
-
-#[derive(Debug, Subcommand)]
-enum GeneratorArgs {
-    /// Generate reproducible inputs, optionally overriding the canonical seed.
-    Deterministic {
-        #[arg(long)]
-        seed: Option<Seed>,
-    },
-    /// Choose a random seed, which is printed so the run can be reproduced.
-    NonDeterministic,
-}
-
-impl GeneratorArgs {
-    fn into_generator(args: Option<Self>) -> Generator {
-        match args {
-            None | Some(GeneratorArgs::Deterministic { seed: None }) => Generator::default(),
-            Some(GeneratorArgs::Deterministic { seed: Some(seed) }) => {
-                Generator::Deterministic(Some(seed))
-            }
-            Some(GeneratorArgs::NonDeterministic) => Generator::NonDeterministic,
-        }
-    }
-}
-
 fn main() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -149,65 +72,19 @@ fn main() {
 }
 
 fn run(args: MatmulArgs) -> Result<BenchmarkReport, Box<dyn Error>> {
-    if matches!(args.target, Target::Device) {
-        panic!("device matmul is not implemented yet");
-    }
+    let report_dir = args.report_dir.clone();
 
-    let report_dir = args.report_dir;
+    let report = match args.target {
+        Target::Host => run_with_backend(args, HostModelBackend::<f32>::new())?,
+        Target::Device => {
+            let context = CudaContext::new(0)?;
+            run_with_backend(args, CudaModelBackend::<f32>::new(context)?)?
+        }
+    };
 
-    // Generate the input matrices A and B.
-    let m = args.m.get();
-    let n = args.n.unwrap_or(args.m).get();
-    let k = args.k.unwrap_or(args.m).get();
-    let generator = GeneratorArgs::into_generator(args.generator);
-    let expected_output_sum = (generator.is_canonical() && m == n && n == k)
-        .then(|| canonical_matmul_checksum(m))
-        .flatten();
-    let generated = generator
-        .matrices::<f32>(m, n, k)
-        .expect("matrix inputs should be generated");
-
-    // Setup the backand & allocate C.
-    let backend = HostModelBackend::<f32>::new();
-    let mut output = backend
-        .alloc(Shape::new([m, n]))
-        .expect("output tensor should be allocated");
-
-    let report = Benchmark::run(
-        BenchmarkConfig {
-            operation: OperationKind::Matmul,
-            target: args.target.into(),
-            dtype: DataType::F32,
-            shape: BenchmarkShape { m, n, k },
-            capture: CaptureConfig::new(args.warmup, args.operations, args.sample_every),
-            work: OperationWork::matmul(m, n, k, size_of::<f32>()),
-            flops_convention: "2*M*N*K",
-            generator: generator.name(),
-            seed: generated.seed,
-            expected_output_sum,
-            environment: benchmark_environment(),
-        },
-        &backend,
-        MatmulOperation {
-            a: &generated.a,
-            b: &generated.b,
-            output: &mut output,
-        },
-    )?;
-
-    let encoded = serde_json::to_string(&report)?;
-    println!("{encoded}");
-
-    if let Some(report_dir) = report_dir {
-        fs::create_dir_all(&report_dir)?;
-        let operation: &'static str = report.operation.into();
-        let target: &'static str = report.target.into();
-        let report_path = report_dir.join(format!(
-            "{operation}-{target}-m{}-n{}-k{}.json",
-            report.shape.m, report.shape.n, report.shape.k
-        ));
-        fs::write(&report_path, format!("{encoded}\n"))?;
-        tracing::info!(report_path = %report_path.display(), "benchmark report written");
+    report.write_to(io::stdout().lock())?;
+    if let Some(report_dir) = report_dir.as_deref() {
+        write_report_file(&report, report_dir)?;
     }
 
     if report.correctness.is_some_and(|checksum| !checksum.passed) {
@@ -219,100 +96,80 @@ fn run(args: MatmulArgs) -> Result<BenchmarkReport, Box<dyn Error>> {
     Ok(report)
 }
 
-struct MatmulOperation<'a> {
-    a: &'a HostTensor<f32, 2>,
-    b: &'a HostTensor<f32, 2>,
-    output: &'a mut HostTensor<f32, 2>,
+fn run_with_backend<B>(args: MatmulArgs, backend: B) -> Result<BenchmarkReport, Box<dyn Error>>
+where
+    B: ModelBackend<f32> + OperationTimer<Error = ModelError>,
+{
+    // Generate the input matrices A and B.
+    let m = args.m.get();
+    let n = args.n.unwrap_or(args.m).get();
+    let k = args.k.unwrap_or(args.m).get();
+
+    let generator = GeneratorArgs::into_generator(args.generator);
+    let expected_output_sum = (generator.is_canonical() && m == n && n == k)
+        .then(|| canonical_matmul_checksum(m))
+        .flatten();
+
+    let generated = generator
+        .matrices::<f32>(m, n, k)
+        .expect("matrix inputs should be generated");
+
+    // Transfer inputs and allocate C before timing begins.
+    let a = backend.upload(&generated.a)?;
+    let b = backend.upload(&generated.b)?;
+    let mut output = backend.alloc(Shape::new([m, n]))?;
+
+    // Run the benchmark.
+    Benchmark::run(
+        BenchmarkConfig {
+            operation: OperationKind::Matmul,
+            target: args.target.into(),
+            dtype: DataType::F32,
+            shape: BenchmarkShape { m, n, k },
+            capture: CaptureConfig::new(args.warmup, args.operations, args.sample_every),
+            work: OperationWork::matmul(m, n, k, size_of::<f32>()),
+            flops_convention: FlopsConvention::MatmulMultiplyAddAsTwo,
+            generator: generator.name(),
+            seed: generated.seed,
+            expected_output_sum,
+            environment: benchmark_environment(),
+        },
+        &backend,
+        MatmulOperation {
+            a: &a,
+            b: &b,
+            output: &mut output,
+        },
+    )
+    .map_err(Into::into)
 }
 
-impl BenchmarkedOperation<HostModelBackend<f32>> for MatmulOperation<'_> {
+struct MatmulOperation<'a, B: ModelBackend<f32>> {
+    a: &'a B::Tensor<2>,
+    b: &'a B::Tensor<2>,
+    output: &'a mut B::Tensor<2>,
+}
+
+impl<B> BenchmarkedOperation<B> for MatmulOperation<'_, B>
+where
+    B: ModelBackend<f32>,
+{
     type Error = ModelError;
 
-    fn execute(&mut self, backend: &HostModelBackend<f32>) -> Result<(), Self::Error> {
+    fn execute(&mut self, backend: &B) -> Result<(), Self::Error> {
+        // TODO: Add a backend zero/fill operation and reset C before every
+        // iteration when benchmarking matmul kernels that accumulate into the
+        // existing target instead of overwriting it.
         backend.try_matmul(self.a, self.b, self.output)
     }
 
-    fn output_sum(&self) -> f64 {
-        self.output.as_slice().iter().copied().map(f64::from).sum()
+    fn output_sum(&self, backend: &B) -> Result<f64, Self::Error> {
+        Ok(backend
+            .download(self.output)?
+            .as_slice()
+            .iter()
+            .copied()
+            .map(f64::from)
+            .sum())
     }
-}
-
-fn benchmark_environment() -> BenchmarkEnvironment {
-    BenchmarkEnvironment {
-        git: GitMetadata {
-            commit: environment_value("PSYDUCK_GIT_COMMIT").or_else(git_commit),
-            dirty: environment_value("PSYDUCK_GIT_DIRTY")
-                .and_then(|value| value.parse().ok())
-                .or_else(git_dirty),
-        },
-        host: HostMetadata {
-            architecture: std::env::consts::ARCH,
-            cpu_model: cpu_model(),
-            hostname: environment_value("HOSTNAME").or_else(hostname),
-            logical_cpus: std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
-            operating_system: std::env::consts::OS,
-        },
-    }
-}
-
-fn environment_value(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-}
-
-fn git_commit() -> Option<String> {
-    command_output_in_repository("git", &["rev-parse", "HEAD"])
-}
-
-fn git_dirty() -> Option<bool> {
-    command_output_in_repository("git", &["status", "--porcelain"]).map(|status| !status.is_empty())
-}
-
-fn hostname() -> Option<String> {
-    command_output("hostname", &[])
-}
-
-#[cfg(target_os = "macos")]
-fn cpu_model() -> Option<String> {
-    command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
-        .or_else(|| command_output("sysctl", &["-n", "hw.model"]))
-}
-
-#[cfg(target_os = "linux")]
-fn cpu_model() -> Option<String> {
-    fs::read_to_string("/proc/cpuinfo")
-        .ok()?
-        .lines()
-        .find_map(|line| line.strip_prefix("model name\t:"))
-        .map(str::trim)
-        .map(str::to_owned)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn cpu_model() -> Option<String> {
-    None
-}
-
-fn command_output_in_repository(program: &str, arguments: &[&str]) -> Option<String> {
-    let output = Command::new(program)
-        .args(arguments)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .ok()?;
-    successful_output(output)
-}
-
-fn command_output(program: &str, arguments: &[&str]) -> Option<String> {
-    successful_output(Command::new(program).args(arguments).output().ok()?)
-}
-
-fn successful_output(output: std::process::Output) -> Option<String> {
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8(output.stdout).ok())
-        .flatten()
-        .map(|value| value.trim().to_owned())
 }

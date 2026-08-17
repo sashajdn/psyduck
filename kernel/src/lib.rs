@@ -31,6 +31,7 @@ pub enum KernelError {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum KernelModule {
     ElementWiseF32,
+    MatmulF32,
 }
 
 impl KernelModule {
@@ -38,6 +39,7 @@ impl KernelModule {
     pub const fn source(self) -> &'static str {
         match self {
             Self::ElementWiseF32 => include_str!("../kernels/elementwise_f32.cu"),
+            Self::MatmulF32 => include_str!("../kernels/matmul_f32.cu"),
         }
     }
 
@@ -46,6 +48,7 @@ impl KernelModule {
     pub const fn source_name(self) -> &'static str {
         match self {
             Self::ElementWiseF32 => "elementwise_f32.cu",
+            Self::MatmulF32 => "matmul_f32.cu",
         }
     }
 }
@@ -54,6 +57,7 @@ impl KernelModule {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Kernel {
     AddF32,
+    NaiveMatmulF32,
 }
 
 impl Kernel {
@@ -62,6 +66,7 @@ impl Kernel {
     pub const fn entry_point(self) -> &'static str {
         match self {
             Self::AddF32 => "add_f32",
+            Self::NaiveMatmulF32 => "naive_matmul_f32",
         }
     }
 
@@ -69,6 +74,7 @@ impl Kernel {
     pub const fn module(self) -> KernelModule {
         match self {
             Self::AddF32 => KernelModule::ElementWiseF32,
+            Self::NaiveMatmulF32 => KernelModule::MatmulF32,
         }
     }
 }
@@ -143,6 +149,20 @@ mod tests {
             module
                 .source()
                 .contains("extern \"C\" __global__ void add_f32")
+        );
+    }
+
+    #[test]
+    fn naive_matmul_f32_descriptor_matches_exported_kernel() {
+        let kernel = Kernel::NaiveMatmulF32;
+        let module = kernel.module();
+
+        assert_eq!(kernel.entry_point(), "naive_matmul_f32");
+        assert_eq!(module.source_name(), "matmul_f32.cu");
+        assert!(
+            module
+                .source()
+                .contains("extern \"C\" __global__ void naive_matmul_f32")
         );
     }
 }

@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{error::Error, io::Write};
 
 use opentelemetry::{KeyValue, metrics::MeterProvider};
 use serde::{Serialize, Serializer};
@@ -41,6 +41,13 @@ pub enum BenchmarkTarget {
 pub enum DataType {
     F32,
     F64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, IntoStaticStr, PartialEq, Serialize)]
+pub enum FlopsConvention {
+    #[strum(serialize = "2*M*N*K")]
+    #[serde(rename = "2*M*N*K")]
+    MatmulMultiplyAddAsTwo,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -193,7 +200,7 @@ pub struct BenchmarkConfig {
     pub shape: BenchmarkShape,
     pub capture: CaptureConfig,
     pub work: OperationWork,
-    pub flops_convention: &'static str,
+    pub flops_convention: FlopsConvention,
     pub generator: &'static str,
     pub seed: u64,
     pub expected_output_sum: Option<f64>,
@@ -204,7 +211,7 @@ pub trait BenchmarkedOperation<B> {
     type Error;
 
     fn execute(&mut self, backend: &B) -> Result<(), Self::Error>;
-    fn output_sum(&self) -> f64;
+    fn output_sum(&self, backend: &B) -> Result<f64, Self::Error>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -215,6 +222,8 @@ pub enum BenchmarkError {
     Telemetry(#[source] opentelemetry_sdk::error::OTelSdkError),
     #[error("benchmark operation failed")]
     Operation(#[source] Box<dyn Error + Send + Sync>),
+    #[error("failed to read benchmark output")]
+    Output(#[source] Box<dyn Error + Send + Sync>),
     #[error("benchmark produced no latency samples")]
     MissingLatencySamples,
     #[error("benchmark produced no non-zero latency samples")]
@@ -241,7 +250,7 @@ pub struct WorkReport {
     pub algorithmic_bytes_per_operation: Option<u128>,
     pub arithmetic_intensity_flops_per_byte: Option<f64>,
     pub flops_per_operation: u128,
-    pub flops_convention: &'static str,
+    pub flops_convention: FlopsConvention,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -274,6 +283,23 @@ pub struct BenchmarkReport {
     pub work: WorkReport,
 }
 
+impl BenchmarkReport {
+    /// Writes this report as one newline-terminated JSON record.
+    pub fn write_to<W: Write>(&self, mut writer: W) -> Result<(), BenchmarkReportWriteError> {
+        serde_json::to_writer(&mut writer, self)?;
+        writer.write_all(b"\n")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BenchmarkReportWriteError {
+    #[error("failed to serialize benchmark report")]
+    Serialize(#[from] serde_json::Error),
+    #[error("failed to write benchmark report")]
+    Write(#[from] std::io::Error),
+}
+
 pub struct Benchmark;
 
 impl Benchmark {
@@ -287,7 +313,8 @@ impl Benchmark {
         O: BenchmarkedOperation<B>,
         O::Error: Error + Send + Sync + From<B::Error> + 'static,
     {
-        let attributes = benchmark_attributes::<B>(&config)?;
+        // Setup metrics.
+        let attributes = Self::benchmark_attributes::<B>(&config)?;
         let (prometheus_registry, meter_provider) =
             prometheus_exporter::meter_provider().map_err(BenchmarkError::Telemetry)?;
         let histograms = OperationHistograms::new(&meter_provider.meter("psyduck.benchmark"));
@@ -296,6 +323,7 @@ impl Benchmark {
         let target_name: &'static str = config.target.into();
         let dtype_name: &'static str = config.dtype.into();
         let clock_name: &'static str = B::CLOCK.into();
+
         info!(
             operation = operation_name,
             backend = target_name,
@@ -313,6 +341,7 @@ impl Benchmark {
             "starting benchmark run"
         );
 
+        // Execute the run.
         let metrics = OperationMetrics::capture(backend, config.capture, |backend| {
             operation.execute(backend)
         })
@@ -343,7 +372,12 @@ impl Benchmark {
         debug_assert!(!prometheus_registry.gather().is_empty());
 
         let total_seconds = metrics.total_elapsed().as_secs_f64();
-        let output_sum = operation.output_sum();
+
+        // Output inspection happens after capture so device downloads and
+        // checksum calculation are never included in operation latency.
+        let output_sum = operation
+            .output_sum(backend)
+            .map_err(|error| BenchmarkError::Output(Box::new(error)))?;
         let correctness = config.expected_output_sum.map(|expected| {
             let absolute_error = (output_sum - expected).abs();
             let tolerance = expected.abs().max(1.0) * CHECKSUM_RELATIVE_TOLERANCE;
@@ -355,6 +389,7 @@ impl Benchmark {
                 passed: absolute_error <= tolerance,
             }
         });
+
         let report = BenchmarkReport {
             schema_version: BenchmarkSchemaVersion::V1,
             aggregate: AggregateReport {
@@ -393,29 +428,38 @@ impl Benchmark {
 
         Ok(report)
     }
-}
 
-fn benchmark_attributes<B: OperationTimer>(
-    config: &BenchmarkConfig,
-) -> Result<[KeyValue; 7], BenchmarkError> {
-    let operation: &'static str = config.operation.into();
-    let backend: &'static str = config.target.into();
-    let clock: &'static str = B::CLOCK.into();
-    let dtype: &'static str = config.dtype.into();
+    fn benchmark_attributes<B: OperationTimer>(
+        config: &BenchmarkConfig,
+    ) -> Result<[KeyValue; 7], BenchmarkError> {
+        let operation: &'static str = config.operation.into();
+        let backend: &'static str = config.target.into();
+        let clock: &'static str = B::CLOCK.into();
+        let dtype: &'static str = config.dtype.into();
 
-    Ok([
-        KeyValue::new(ATTRIBUTE_OPERATION, operation),
-        KeyValue::new(ATTRIBUTE_BACKEND, backend),
-        KeyValue::new(ATTRIBUTE_CLOCK, clock),
-        KeyValue::new(ATTRIBUTE_DTYPE, dtype),
-        KeyValue::new(ATTRIBUTE_M, metric_dimension(ATTRIBUTE_M, config.shape.m)?),
-        KeyValue::new(ATTRIBUTE_N, metric_dimension(ATTRIBUTE_N, config.shape.n)?),
-        KeyValue::new(ATTRIBUTE_K, metric_dimension(ATTRIBUTE_K, config.shape.k)?),
-    ])
-}
+        Ok([
+            KeyValue::new(ATTRIBUTE_OPERATION, operation),
+            KeyValue::new(ATTRIBUTE_BACKEND, backend),
+            KeyValue::new(ATTRIBUTE_CLOCK, clock),
+            KeyValue::new(ATTRIBUTE_DTYPE, dtype),
+            KeyValue::new(
+                ATTRIBUTE_M,
+                Self::metric_dimension(ATTRIBUTE_M, config.shape.m)?,
+            ),
+            KeyValue::new(
+                ATTRIBUTE_N,
+                Self::metric_dimension(ATTRIBUTE_N, config.shape.n)?,
+            ),
+            KeyValue::new(
+                ATTRIBUTE_K,
+                Self::metric_dimension(ATTRIBUTE_K, config.shape.k)?,
+            ),
+        ])
+    }
 
-fn metric_dimension(name: &'static str, value: usize) -> Result<i64, BenchmarkError> {
-    i64::try_from(value).map_err(|_| BenchmarkError::InvalidDimension { name, value })
+    fn metric_dimension(name: &'static str, value: usize) -> Result<i64, BenchmarkError> {
+        i64::try_from(value).map_err(|_| BenchmarkError::InvalidDimension { name, value })
+    }
 }
 
 struct OperationHistograms {
@@ -581,8 +625,8 @@ mod tests {
 
     use super::{
         Benchmark, BenchmarkConfig, BenchmarkEnvironment, BenchmarkSchemaVersion, BenchmarkShape,
-        BenchmarkTarget, BenchmarkedOperation, DataType, Distribution, GitMetadata, HostMetadata,
-        OperationKind, OperationWork,
+        BenchmarkTarget, BenchmarkedOperation, DataType, Distribution, FlopsConvention,
+        GitMetadata, HostMetadata, OperationKind, OperationWork,
     };
 
     struct FakeTimer {
@@ -622,8 +666,8 @@ mod tests {
             Ok(())
         }
 
-        fn output_sum(&self) -> f64 {
-            42.0
+        fn output_sum(&self, _backend: &FakeTimer) -> Result<f64, Self::Error> {
+            Ok(42.0)
         }
     }
 
@@ -639,7 +683,7 @@ mod tests {
                 NonZeroUsize::new(1).unwrap(),
             ),
             work: OperationWork::matmul(4, 4, 4, size_of::<f32>()),
-            flops_convention: "2*M*N*K",
+            flops_convention: FlopsConvention::MatmulMultiplyAddAsTwo,
             generator: "deterministic",
             seed: 7,
             expected_output_sum: Some(42.0),
@@ -694,5 +738,13 @@ mod tests {
         assert_eq!(report.latency_us.p100, 1.0);
         assert_eq!(report.output_sum, 42.0);
         assert!(report.correctness.unwrap().passed);
+
+        let mut encoded = Vec::new();
+        report.write_to(&mut encoded).unwrap();
+        assert!(encoded.ends_with(b"\n"));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["output_sum"],
+            42.0
+        );
     }
 }

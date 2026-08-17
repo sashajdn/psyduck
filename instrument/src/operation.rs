@@ -119,6 +119,10 @@ impl<T> OperationMetrics<T> {
                 let start = backend.mark()?;
                 let result = operation(backend)?;
                 let end = backend.mark()?;
+                // TODO: Defer CUDA event synchronization and elapsed-time
+                // calculation until after all launches when measuring
+                // continuously saturated throughput. Immediate calculation
+                // intentionally measures each sampled operation in isolation.
                 let elapsed = backend.elapsed(start, end)?;
                 metrics.push(OperationMetric { result, elapsed });
             } else {
