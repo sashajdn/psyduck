@@ -74,6 +74,52 @@ just modal-sync
 just modal-check
 ```
 
+## Run host matmul on a remote Linux machine
+
+The remote workflow publishes the current tracked and non-ignored working tree
+to immutable releases under the remote user's home directory. Local `.env`,
+`.git`, and build artifacts are not transferred. A completed synchronization
+atomically updates `~/psyduck/current`, while the Cargo target directory remains
+shared across releases for incremental builds.
+
+Configure a key-only SSH host in the local `.env` file:
+
+```dotenv
+PSYDUCK_REMOTE_HOST=psyduck-scaleway
+PSYDUCK_REMOTE_DIR=psyduck
+```
+
+The remote host must provide Rust `1.96.0`, `just`, `rsync`, `perf`, and
+`taskset`. Publish the current working tree without running it:
+
+```shell
+just remote-sync
+```
+
+Run the existing host matmul flow remotely. This synchronizes first and streams
+the benchmark report back to the local terminal:
+
+```shell
+just matmul remote 1024 "" "" "" 5 3 1
+```
+
+For an interactive performance-counter run, synchronize locally and then enter
+the machine:
+
+```shell
+just remote-sync
+ssh psyduck-scaleway
+cd ~/psyduck/current
+just matmul-perf 1024 2 "" "" "" 5 3 1
+```
+
+The second argument is the `taskset` CPU list, so the example pins the process
+to logical CPU 2. `matmul-perf` builds the release binary before starting
+`perf stat`; compilation is therefore excluded from the counters. The counters
+cover the entire binary process—including input generation, warmups, output
+validation, and reporting—rather than only the internally sampled matmul
+operations.
+
 # Plan
 
 1. Validate add / mul on Nvidia GPU via rust

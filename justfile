@@ -81,7 +81,11 @@ modal-run rust_bin gpu rust_args_json="[]":
 modal-matrix-add-validate:
     just modal-run gpu_add_validate T4
 
-# Run matmul locally on the host or remotely on a Modal T4.
+# Publish the current tracked and non-ignored working tree to the remote host.
+remote-sync:
+    deployment/remote/sync.sh
+
+# Run matmul locally, on a remote Linux host, or on a Modal T4.
 # Omit N and K for a square M x M multiplication.
 matmul target="host" m="512" n="" k="" report_dir="" operations="1" warmup="3" sample_every="1":
     #!/usr/bin/env bash
@@ -131,6 +135,11 @@ matmul target="host" m="512" n="" k="" report_dir="" operations="1" warmup="3" s
             fi
             cargo run --release --bin matmul -- "${rust_args[@]}"
             ;;
+        remote)
+            deployment/remote/run.sh \
+                just matmul host "${m}" "${n}" "${k}" "${report_dir}" \
+                "${operations}" "${warmup}" "${sample_every}"
+            ;;
         device)
             rust_args=(
                 --target device --m "${m}" --n "${n}" --k "${k}"
@@ -149,10 +158,93 @@ matmul target="host" m="512" n="" k="" report_dir="" operations="1" warmup="3" s
             just modal-run matmul T4 "${rust_args_json}"
             ;;
         *)
-            echo "unsupported matmul target: ${target} (expected host or device)" >&2
+            echo "unsupported matmul target: ${target} (expected host, remote, or device)" >&2
             exit 2
             ;;
     esac
+
+# Build, pin, and collect process-wide Linux perf counters for host matmul.
+# Run this from a synchronized Linux checkout, normally ~/psyduck/current.
+matmul-perf m="512" cpu_list="2" n="" k="" report_dir="" operations="1" warmup="3" sample_every="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    m="{{ m }}"
+    cpu_list="{{ cpu_list }}"
+    n="{{ n }}"
+    k="{{ k }}"
+    report_dir="{{ report_dir }}"
+    operations="{{ operations }}"
+    warmup="{{ warmup }}"
+    sample_every="{{ sample_every }}"
+    n="${n:-${m}}"
+    k="${k:-${m}}"
+
+    if [[ ! "${cpu_list}" =~ ^[0-9]+([,-][0-9]+)*$ ]]; then
+        echo "cpu_list must be a taskset CPU list such as 2 or 2,4-5" >&2
+        exit 2
+    fi
+
+    for dimension in "${m}" "${n}" "${k}"; do
+        case "${dimension}" in
+            4|8|16|32|64|128|256|512|1024|2048|4096) ;;
+            *)
+                echo "unsupported matrix dimension: ${dimension} (expected 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, or 4096)" >&2
+                exit 2
+                ;;
+        esac
+    done
+
+    for value in "${operations}" "${sample_every}"; do
+        if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "operations and sample_every must be positive integers" >&2
+            exit 2
+        fi
+    done
+    if [[ ! "${warmup}" =~ ^[0-9]+$ ]]; then
+        echo "warmup must be a non-negative integer" >&2
+        exit 2
+    fi
+
+    rust_args=(
+        --target host --m "${m}" --n "${n}" --k "${k}"
+        --operations "${operations}" --warmup "${warmup}"
+        --sample-every "${sample_every}"
+    )
+    if [[ -n "${report_dir}" ]]; then
+        rust_args+=(--report-dir "${report_dir}")
+    fi
+
+    if [[ -f .psyduck-release ]]; then
+        release_commit=""
+        release_dirty=""
+        while IFS='=' read -r name value; do
+            case "${name}" in
+                PSYDUCK_GIT_COMMIT) release_commit="${value}" ;;
+                PSYDUCK_GIT_DIRTY) release_dirty="${value}" ;;
+            esac
+        done < .psyduck-release
+
+        if [[ ! "${release_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release commit metadata is invalid" >&2
+            exit 2
+        fi
+        if [[ "${release_dirty}" != "true" && "${release_dirty}" != "false" ]]; then
+            echo "release dirty metadata is invalid" >&2
+            exit 2
+        fi
+
+        export PSYDUCK_GIT_COMMIT="${release_commit}"
+        export PSYDUCK_GIT_DIRTY="${release_dirty}"
+    fi
+
+    cargo build --release --bin matmul
+    target_directory="${CARGO_TARGET_DIR:-target}"
+
+    taskset --cpu-list "${cpu_list}" \
+        perf stat \
+        --event cycles:u,instructions:u,branches:u,branch-misses:u,cache-references:u,cache-misses:u \
+        -- "${target_directory%/}/release/matmul" "${rust_args[@]}"
 
 modal-format:
     UV_CACHE_DIR="{{ modal_uv_cache }}" \
