@@ -144,14 +144,21 @@ operations.
 
 ## Naive matmul performance history
 
+This table tracks aggregate throughput and measured kernel time for square
+`f32` matmul by commit. Throughput uses the `2*N³` FLOP convention; kernel time
+is the total for 10 measured operations and excludes warmups and harness work.
+
+| Note | Target | Commit | Measurement | N=4 | N=8 | N=16 | N=32 | N=64 | N=128 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
+|:--|:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
+| naive_cpu | CPU | [`bdfa68b04359`](https://github.com/sashajdn/psyduck/commit/bdfa68b04359733820164f95f76c8069303da405)\* | Aggregate throughput (GFLOP/s) | 0.355 | 0.638 | 0.709 | 0.740 | 0.746 | 1.058 | 0.686 | 0.594 | 0.563 | 0.207 | ❌ |
+| naive_cpu | CPU | `bdfa68b04359`\* | Kernel time (s) | 0.000004 | 0.000016 | 0.000115 | 0.000885 | 0.007032 | 0.039630 | 0.489186 | 4.522000 | 38.167563 | 831.913122 | ❌ |
+
 \* The matmul implementation is from commit `bdfa68b04359`; the benchmark ran
 with uncommitted reporting changes that add p99.9 and fix physical target-directory
 resolution on the remote host. Environment: Intel Xeon D-1531 at 2.20 GHz,
 single-threaded and unpinned, canonical deterministic seed
 `5788068096124340993`, 3 warmups, 10 samples, and every operation sampled. All
 executed sizes passed checksum validation. `N=4096` was deliberately skipped.
-With only 10 samples, p99 and p99.9 are interpolations near the maximum and
-should not be treated as statistically robust tail estimates.
 
 # Plan
 
