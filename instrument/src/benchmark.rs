@@ -112,6 +112,7 @@ pub struct Distribution {
     pub p90: f64,
     pub p95: f64,
     pub p99: f64,
+    pub p999: f64,
     pub p100: f64,
 }
 
@@ -135,6 +136,7 @@ impl Distribution {
             p90: percentile(&samples, 0.90),
             p95: percentile(&samples, 0.95),
             p99: percentile(&samples, 0.99),
+            p999: percentile(&samples, 0.999),
             p100: samples[samples.len() - 1],
         })
     }
@@ -710,6 +712,7 @@ mod tests {
 
         assert_eq!(distribution.min, 1.0);
         assert_eq!(distribution.p50, 3.0);
+        assert_eq!(distribution.p999, 4.996);
         assert_eq!(distribution.p100, 5.0);
     }
 

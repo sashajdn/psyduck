@@ -29,7 +29,8 @@ if [[ "${release_dirty}" != "true" && "${release_dirty}" != "false" ]]; then
     exit 2
 fi
 
-remote_root="$(cd ../.. && pwd -P)"
+release_root="$(pwd -P)"
+remote_root="$(cd "${release_root}/../.." && pwd -P)"
 export PATH="${HOME}/.cargo/bin:${PATH}"
 export CARGO_TARGET_DIR="${remote_root}/target"
 export PSYDUCK_GIT_COMMIT="${release_commit}"
