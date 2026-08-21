@@ -51,4 +51,7 @@ pub trait ModelBackend<F: QuantizedFp> {
         b: &Self::Tensor<2>,
         target: &mut Self::Tensor<2>,
     ) -> Result<(), ModelError>;
+
+    /// Performs in-place transpose of a rank-2 tensor.
+    fn transpose(target: &mut Self::Tensor<2>) -> Result<(), ModelError>;
 }

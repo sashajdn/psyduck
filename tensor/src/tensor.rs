@@ -1,4 +1,7 @@
-use std::ops::{Add, Mul, Sub};
+use std::{
+    fmt,
+    ops::{Add, Mul, Sub},
+};
 
 use crate::Shape;
 
@@ -65,7 +68,9 @@ pub trait MatrixTensor<F>: Tensor<F, 2> {
 
 impl<F, T: Tensor<F, 2>> MatrixTensor<F> for T {}
 
-pub trait QuantizedFp: Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> {
+pub trait QuantizedFp:
+    fmt::Debug + Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self>
+{
     fn from_f32(value: f32) -> Self;
     fn zero() -> Self;
 }

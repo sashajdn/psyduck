@@ -30,3 +30,4 @@ flamegraph.svg
 *.swo
 .idea/
 .vscode/
+./optimizations/*

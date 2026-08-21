@@ -112,6 +112,10 @@ impl<F: QuantizedFp> ModelBackend<F> for HostModelBackend<F> {
 
         Ok(())
     }
+
+    fn transpose(target: &mut Self::Tensor<2>) -> Result<(), ModelError> {
+        target.transpose().map_err(Into::into)
+    }
 }
 
 #[cfg(test)]
@@ -120,8 +124,14 @@ mod tests {
 
     use super::{HostModelBackend, ModelBackend};
 
-    fn matrix(values: &[f32; 4]) -> HostTensor<f32, 2> {
+    fn square_matrix(values: &[f32; 4]) -> HostTensor<f32, 2> {
         let mut tensor = HostTensor::zeros(Shape::new([2, 2]));
+        tensor.as_mut_slice().copy_from_slice(values);
+        tensor
+    }
+
+    fn rectangular_matrix(values: &[f32; 6]) -> HostTensor<f32, 2> {
+        let mut tensor = HostTensor::zeros(Shape::new([2, 3]));
         tensor.as_mut_slice().copy_from_slice(values);
         tensor
     }
@@ -129,8 +139,8 @@ mod tests {
     #[test]
     fn correctly_adds_two_matrices() {
         let backend = HostModelBackend::<f32>::new();
-        let a = matrix(&[1.0, 2.0, 3.0, 4.0]);
-        let b = matrix(&[5.0, 6.0, 7.0, 8.0]);
+        let a = square_matrix(&[1.0, 2.0, 3.0, 4.0]);
+        let b = square_matrix(&[5.0, 6.0, 7.0, 8.0]);
         let mut target = HostTensor::zeros(Shape::new([2, 2]));
 
         backend
@@ -143,8 +153,8 @@ mod tests {
     #[test]
     fn correctly_multiplies_two_matrices() {
         let backend = HostModelBackend::<f32>::new();
-        let a = matrix(&[1.0, 2.0, 3.0, 4.0]);
-        let b = matrix(&[5.0, 6.0, 7.0, 8.0]);
+        let a = square_matrix(&[1.0, 2.0, 3.0, 4.0]);
+        let b = square_matrix(&[5.0, 6.0, 7.0, 8.0]);
         let mut target = HostTensor::zeros(Shape::new([2, 2]));
 
         backend
@@ -158,5 +168,25 @@ mod tests {
             .expect("repeated matmul should overwrite its target");
 
         assert_eq!(target.as_slice(), &[19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn correctly_transpose_rank_2_matrix_inplace() {
+        // Validate square transpose.
+        let mut square = square_matrix(&[1.0, 2.0, 3.0, 4.0]);
+        HostModelBackend::<f32>::transpose(&mut square).expect("2x2 matrix should be transposable");
+        assert_eq!(square.as_slice(), &[1.0, 3.0, 2.0, 4.0]);
+
+        // Validate rectangular transpose.
+        let mut rectangular = rectangular_matrix(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        HostModelBackend::<f32>::transpose(&mut rectangular)
+            .expect("2x3 matrix should be transposable");
+        assert_eq!((rectangular.rows(), rectangular.cols()), (3, 2));
+        assert_eq!(rectangular.as_slice(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+
+        HostModelBackend::<f32>::transpose(&mut rectangular)
+            .expect("3x2 matrix should be transposable");
+        assert_eq!((rectangular.rows(), rectangular.cols()), (2, 3));
+        assert_eq!(rectangular.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 }
