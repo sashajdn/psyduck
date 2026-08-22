@@ -19,14 +19,14 @@ data inside `try_matmul`, that preparation is included.
 | Optimization | Target | Commit | N=4 | N=8 | N=16 | N=32 | N=64 | N=128 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
 |:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
 | naive | CPU | [`bdfa68b04359`](https://github.com/sashajdn/psyduck/commit/bdfa68b04359733820164f95f76c8069303da405)\* | 0.355 | 0.638 | 0.709 | 0.740 | 0.746 | 1.058 | 0.686 | 0.594 | 0.563 | 0.207 | ❌ |
-| transposed_b | CPU | [`49f9e6e2b63c`](https://github.com/sashajdn/psyduck/commit/49f9e6e2b63c5c4c1973d43a307b75006b8cf468)\* | 0.346 | 0.806 | 1.156 | 1.404 | 1.607 | 1.575 | 1.659 | 1.820 | 1.803 | 1.756 | 1.748 |
+| transposed_b | CPU | [`ebabe625918c`](https://github.com/sashajdn/psyduck/commit/ebabe625918c5451342b973d91861352030fbde9)\* | 0.346 | 0.806 | 1.156 | 1.404 | 1.607 | 1.575 | 1.659 | 1.820 | 1.803 | 1.756 | 1.748 |
 
 #### Kernel time (seconds)
 
 | Optimization | Target | Commit | N=4 | N=8 | N=16 | N=32 | N=64 | N=128 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
 |:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
 | naive | CPU | `bdfa68b04359`\* | 0.000004 | 0.000016 | 0.000115 | 0.000885 | 0.007032 | 0.039630 | 0.489186 | 4.522000 | 38.167563 | 831.913122 | ❌ |
-| transposed_b | CPU | `49f9e6e2b63c`\* | 0.000004 | 0.000013 | 0.000071 | 0.000467 | 0.003263 | 0.026632 | 0.202230 | 1.474606 | 11.912170 | 97.847109 | 786.297922 |
+| transposed_b | CPU | `ebabe625918c`\* | 0.000004 | 0.000013 | 0.000071 | 0.000467 | 0.003263 | 0.026632 | 0.202230 | 1.474606 | 11.912170 | 97.847109 | 786.297922 |
 
 
 #### Relative to the naive baseline
@@ -36,12 +36,12 @@ Throughput is `optimization / naive`, so values above `1.00×` are faster.
 | Optimization | Target | Commit | N=4 | N=8 | N=16 | N=32 | N=64 | N=128 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
 |:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
 | naive | CPU | `bdfa68b04359`\* | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | — |
-| transposed_b | CPU | `49f9e6e2b63c`\* | 0.98× | 1.26× | 1.63× | 1.90× | 2.15× | 1.49× | 2.42× | 3.06× | 3.20× | 8.48× | — |
+| transposed_b | CPU | `ebabe625918c`\* | 0.98× | 1.26× | 1.63× | 1.90× | 2.15× | 1.49× | 2.42× | 3.06× | 3.20× | 8.48× | — |
 
 | Optimization | Target | Commit | Throughput ↑ | Cycles/add ↓ | Instructions/add ↓ | L1 misses/add ↓ | L2 misses/add ↓ | L3 misses/add ↓ | Memory-stall cycles/add ↓ |
 |:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|
 | naive | CPU | `bdfa68b04359`\* | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× |
-| transposed_b | CPU | `49f9e6e2b63c`\* | 3.64× | 3.67× | 5.47× | 534× | 2,105× | 857× | 2.78× |
+| transposed_b | CPU | `ebabe625918c`\* | 3.64× | 3.67× | 5.47× | 534× | 2,105× | 857× | 2.78× |
 
 #### Largest timing checkpoints
 
