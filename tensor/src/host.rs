@@ -81,6 +81,7 @@ impl<F: QuantizedFp> HostTensor<F, 2> {
         Ok(())
     }
 
+    #[inline]
     pub fn swap(&mut self, x1: usize, y1: usize, x2: usize, y2: usize) -> Result<(), MatrixError> {
         let cols = self.cols();
         let index1 = x1

@@ -10,14 +10,71 @@ Making GPUs go fast from scratch
 This table tracks aggregate throughput and measured kernel time for square
 `f32` matmul by commit. Throughput uses the `2*N³` FLOP convention; kernel time
 is the total for 10 measured operations and excludes warmups and harness work.
+For variants that prepare data inside `try_matmul`, that preparation is included.
 
 
 | Note | Target | Commit | Measurement | N=4 | N=8 | N=16 | N=32 | N=64 | N=128 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
 |:--|:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
 | naive_cpu | CPU | [`bdfa68b04359`](https://github.com/sashajdn/psyduck/commit/bdfa68b04359733820164f95f76c8069303da405)\* | Aggregate throughput (GFLOP/s) | 0.355 | 0.638 | 0.709 | 0.740 | 0.746 | 1.058 | 0.686 | 0.594 | 0.563 | 0.207 | ❌ |
 | naive_cpu | CPU | `bdfa68b04359`\* | Kernel time (s) | 0.000004 | 0.000016 | 0.000115 | 0.000885 | 0.007032 | 0.039630 | 0.489186 | 4.522000 | 38.167563 | 831.913122 | ❌ |
+| transpose_b_cpu | CPU | [`49f9e6e2b63c`](https://github.com/sashajdn/psyduck/commit/49f9e6e2b63c5c4c1973d43a307b75006b8cf468)\* | Aggregate throughput (GFLOP/s) | 0.346 | 0.806 | 1.156 | 1.404 | 1.607 | 1.575 | 1.659 | 1.820 | 1.803 | 1.756 | 1.748 |
+| transpose_b_cpu | CPU | `49f9e6e2b63c`\* | Kernel time (s) | 0.000004 | 0.000013 | 0.000071 | 0.000467 | 0.003263 | 0.026632 | 0.202230 | 1.474606 | 11.912170 | 97.847109 | 786.297922 |
+| transpose_b_cpu / naive_cpu | CPU | comparison | Throughput speedup | 0.98× | 1.26× | 1.63× | 1.90× | 2.15× | 1.49× | 2.42× | 3.06× | 3.20× | 8.48× | — |
 
-> Square matrix matmul benchmark framework first warmups the host / device machine before averaging over K iterations.
+`transpose_b_cpu` clones and transposes `B` inside every measured operation. Its
+throughput remains approximately 1.75–1.82 GFLOP/s from `N=512` through
+`N=4096`. Matched performance counters show that the plateau is backend-bound,
+with TMA attributing a larger share to Memory bound than Core bound. This memory
+category includes the on-core cache and load/store subsystem and does not imply
+frequent DRAM access.
+
+\* The benchmark report recorded a dirty working tree at the displayed base
+commit.
+
+> The square-matrix benchmark performs three warmup operations before collecting 10 measured operations.
+
+### Matched CPU counter checkpoint
+
+This comparison ran both implementations at `N=1024` with identical settings:
+logical CPU 2, one warmup, two individually sampled operations, and three
+process-level `perf` repetitions. Every raw counter had 100% coverage.
+
+| Metric | Naive | Transposed B | Difference |
+|:--|--:|--:|--:|
+| Aggregate throughput | 0.494 GFLOP/s | 1.801 GFLOP/s | 3.64× higher |
+| Cycles/add | 10.9871 | 2.9943 | 3.67× lower |
+| Instructions/add | 21.0286 | 3.8479 | 5.47× lower |
+| Cycles/instruction | 0.5225 | 0.7782 | 1.49× higher |
+| L1 misses/add | 0.905116 | 0.001694 | 534× lower |
+| L2 misses/add | 0.904271 | 0.000430 | 2,105× lower |
+| L3 misses/add | 0.004931 | 0.00000575 | 857× lower |
+| Any-memory stall cycles/add | 2.9711 | 1.0684 | 2.78× lower |
+
+The matching `N=512` TMA runs used the same one-warmup/two-operation
+configuration. These multiplexed estimates are directional:
+
+| TMA metric | Naive | Transposed B |
+|:--|--:|--:|
+| Retiring | 44.1% | 31.2% |
+| Frontend bound | 5.7% | 1.8% |
+| Backend bound | 50.1% | 66.3% |
+| Bad speculation | 0.2% | 0.2% |
+| Core bound | 32.4% | 23.1% |
+| Memory bound | 17.4% | 43.9% |
+
+### Largest timing checkpoints
+
+These are not shape-matched. They show the largest recorded timing point for
+each implementation while keeping a single operation below five minutes:
+
+| Variant | N | FLOPs/operation | Seconds/operation | Throughput |
+|:--|--:|--:|--:|--:|
+| Naive | 2048 | 17.180 billion | 83.191 | 0.207 GFLOP/s |
+| Transposed B | 4096 | 137.439 billion | 78.630 | 1.748 GFLOP/s |
+
+The transposed case performs 8× as much algorithmic work in slightly less wall
+time. This is an equal-time frontier comparison, not an apples-to-apples shape
+comparison.
 
 ## Run the matrix-add GPU validation
 
