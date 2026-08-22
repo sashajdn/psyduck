@@ -81,14 +81,15 @@ impl<F: QuantizedFp> ModelBackend<F> for HostModelBackend<F> {
         // The k-stride over `b` is now contiguous given the
         // underlying is a Vec<F>.
         //
-        // As we read cache-lines from memory, the following k values are likely
-        // to already be in the cache - reducing the likihood of a cache miss &
+        // As we read cache-lines from memory, the following b-stride values are likely
+        // to already be in the cache, given we've packed the cacheline - reducing the likihood of a cache miss &
         // more expensive cache read from a higher level of the memory hierarchy.
         //
-        // Given a transpose operation is of order N^2. We are increasing the computation
-        // but reducing memory reads. We should expect slightly worse performance for low N
-        // but performance to increase relative to N, as we grow pass the bound at which
-        // a `b` K-stride fits into resident registers or memory.
+        // Given a transpose operation is of order (K * M) per O(K * M * N) reads in the naive case. We are increasing the computation
+        // but reducing memory reads from caches further away from compute. Hence, memory locality improves.
+        //
+        // We should expect slightly worse performance for low N but performance to increase relative to N,
+        // as we grow pass the bound at which a given `b` K-stride fits into resident registers or memory.
         //
         // Before:
         //        B{2}
