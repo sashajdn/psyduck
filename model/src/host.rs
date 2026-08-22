@@ -77,14 +77,61 @@ impl<F: QuantizedFp> ModelBackend<F> for HostModelBackend<F> {
     ) -> Result<(), ModelError> {
         a.validate_matmul_target_with(b, c)?;
 
+        // Transpose `b` for memory locality.
+        // The k-stride over `b` is now contiguous given the
+        // underlying is a Vec<F>.
+        //
+        // As we read cache-lines from memory, the following b-stride values are likely
+        // to already be in the cache, given we've packed the cacheline - reducing the likihood of a cache miss &
+        // more expensive cache read from a higher level of the memory hierarchy.
+        //
+        // Given a transpose operation is of order (K * M) per O(K * M * N) reads in the naive case. We are increasing the computation
+        // but reducing memory reads from caches further away from compute. Hence, memory locality improves.
+        //
+        // We should expect slightly worse performance for low N but performance to increase relative to N,
+        // as we grow pass the bound at which a given `b` K-stride fits into resident registers or memory.
+        //
+        // Before:
+        //        B{2}
+        // | 0 1 [2] |
+        // | 3 4 [5] |
+        // | 6 7 [8] |
+        //
+        // As read from Vec: [0, 1, [2], 3, 4, [5], 6, 7, [8]]
+        //
+        // After:
+        //
+        // | 0 3 6 |
+        // | 1 4 7 |
+        // | [2] [5] [8] |
+        //
+        // As read from Vec: [0, 3, 6, 1, 4, 7, [2], [5], [8]]
+        //
+        // Now we can see that the stride *is* contiguous in memory.
+        // This makes little differnce for N < 16.
+        // 16 given a f32 is 4 bytes, a cacheline is 64 bytes.
+        // So we can fit 16 f32 values in a cacheline.
+        //
+        // If we there can pack the entire cacheline from contiguous memory only *with*
+        // values we want at a given point in time, we should reduce cache misses
+        // quite substantially.
+        let mut b_t = b.clone();
+        b_t.transpose()?;
+
         for i in 0..a.rows() {
-            for j in 0..b.cols() {
+            for j in 0..b_t.rows() {
+                // Set accumulator per K-stride.
                 let mut cij = F::zero();
-                for k in 0..b.rows() {
+
+                // A[M, K], B[K, N], B^T[N, K]
+                // K is the same for a.cols() or b.rows().
+                for k in 0..a.cols() {
                     let aik = a.get(i, k)?;
-                    let bjk = b.get(k, j)?;
-                    cij = cij + (aik * bjk);
+                    // This read is now contiguous along a cacheline.
+                    let btjk = b_t.get(j, k)?;
+                    cij = cij + (aik * btjk);
                 }
+
                 c.set(i, j, cij)?;
             }
         }
@@ -112,6 +159,11 @@ impl<F: QuantizedFp> ModelBackend<F> for HostModelBackend<F> {
 
         Ok(())
     }
+
+    #[inline]
+    fn transpose(target: &mut Self::Tensor<2>) -> Result<(), ModelError> {
+        target.transpose().map_err(Into::into)
+    }
 }
 
 #[cfg(test)]
@@ -120,8 +172,14 @@ mod tests {
 
     use super::{HostModelBackend, ModelBackend};
 
-    fn matrix(values: &[f32; 4]) -> HostTensor<f32, 2> {
+    fn square_matrix(values: &[f32; 4]) -> HostTensor<f32, 2> {
         let mut tensor = HostTensor::zeros(Shape::new([2, 2]));
+        tensor.as_mut_slice().copy_from_slice(values);
+        tensor
+    }
+
+    fn rectangular_matrix(values: &[f32; 6]) -> HostTensor<f32, 2> {
+        let mut tensor = HostTensor::zeros(Shape::new([2, 3]));
         tensor.as_mut_slice().copy_from_slice(values);
         tensor
     }
@@ -129,8 +187,8 @@ mod tests {
     #[test]
     fn correctly_adds_two_matrices() {
         let backend = HostModelBackend::<f32>::new();
-        let a = matrix(&[1.0, 2.0, 3.0, 4.0]);
-        let b = matrix(&[5.0, 6.0, 7.0, 8.0]);
+        let a = square_matrix(&[1.0, 2.0, 3.0, 4.0]);
+        let b = square_matrix(&[5.0, 6.0, 7.0, 8.0]);
         let mut target = HostTensor::zeros(Shape::new([2, 2]));
 
         backend
@@ -143,8 +201,8 @@ mod tests {
     #[test]
     fn correctly_multiplies_two_matrices() {
         let backend = HostModelBackend::<f32>::new();
-        let a = matrix(&[1.0, 2.0, 3.0, 4.0]);
-        let b = matrix(&[5.0, 6.0, 7.0, 8.0]);
+        let a = square_matrix(&[1.0, 2.0, 3.0, 4.0]);
+        let b = square_matrix(&[5.0, 6.0, 7.0, 8.0]);
         let mut target = HostTensor::zeros(Shape::new([2, 2]));
 
         backend
@@ -158,5 +216,25 @@ mod tests {
             .expect("repeated matmul should overwrite its target");
 
         assert_eq!(target.as_slice(), &[19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn correctly_transpose_rank_2_matrix_inplace() {
+        // Validate square transpose.
+        let mut square = square_matrix(&[1.0, 2.0, 3.0, 4.0]);
+        HostModelBackend::<f32>::transpose(&mut square).expect("2x2 matrix should be transposable");
+        assert_eq!(square.as_slice(), &[1.0, 3.0, 2.0, 4.0]);
+
+        // Validate rectangular transpose.
+        let mut rectangular = rectangular_matrix(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        HostModelBackend::<f32>::transpose(&mut rectangular)
+            .expect("2x3 matrix should be transposable");
+        assert_eq!((rectangular.rows(), rectangular.cols()), (3, 2));
+        assert_eq!(rectangular.as_slice(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+
+        HostModelBackend::<f32>::transpose(&mut rectangular)
+            .expect("3x2 matrix should be transposable");
+        assert_eq!((rectangular.rows(), rectangular.cols()), (2, 3));
+        assert_eq!(rectangular.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 }

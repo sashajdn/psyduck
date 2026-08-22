@@ -173,6 +173,10 @@ impl ModelBackend<f32> for CudaModelBackend<f32> {
 
         Ok(())
     }
+
+    fn transpose(_target: &mut Self::Tensor<2>) -> Result<(), ModelError> {
+        unimplemented!();
+    }
 }
 
 #[inline]

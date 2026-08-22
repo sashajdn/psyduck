@@ -7,17 +7,48 @@ Making GPUs go fast from scratch
 
 ### Square Matrices
 
-This table tracks aggregate throughput and measured kernel time for square
-`f32` matmul by commit. Throughput uses the `2*N³` FLOP convention; kernel time
-is the total for 10 measured operations and excludes warmups and harness work.
+These tables track square `f32` matmul by optimization and commit. Throughput
+uses the `2*N³` FLOP convention; kernel time is the total for 10 measured
+operations and excludes warmups and harness work. For variants that prepare
+data inside `try_matmul`, that preparation is included.
+
+> The square-matrix benchmark performs three warmup operations before collecting 10 measured operations.
+
+#### Aggregate throughput (GFLOP/s)
+
+| Optimization | Target | Commit | N=4 | N=8 | N=16 | N=32 | N=64 | N=128 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
+|:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
+| naive | CPU | [`bdfa68b04359`](https://github.com/sashajdn/psyduck/commit/bdfa68b04359733820164f95f76c8069303da405)\* | 0.355 | 0.638 | 0.709 | 0.740 | 0.746 | 1.058 | 0.686 | 0.594 | 0.563 | 0.207 | ❌ |
+| transposed_b | CPU | [`ebabe625918c`](https://github.com/sashajdn/psyduck/commit/ebabe625918c5451342b973d91861352030fbde9)\* | 0.346 | 0.806 | 1.156 | 1.404 | 1.607 | 1.575 | 1.659 | 1.820 | 1.803 | 1.756 | 1.748 |
+
+#### Kernel time (seconds)
+
+| Optimization | Target | Commit | N=4 | N=8 | N=16 | N=32 | N=64 | N=128 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
+|:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
+| naive | CPU | `bdfa68b04359`\* | 0.000004 | 0.000016 | 0.000115 | 0.000885 | 0.007032 | 0.039630 | 0.489186 | 4.522000 | 38.167563 | 831.913122 | ❌ |
+| transposed_b | CPU | `ebabe625918c`\* | 0.000004 | 0.000013 | 0.000071 | 0.000467 | 0.003263 | 0.026632 | 0.202230 | 1.474606 | 11.912170 | 97.847109 | 786.297922 |
 
 
-| Note | Target | Commit | Measurement | N=4 | N=8 | N=16 | N=32 | N=64 | N=128 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
-|:--|:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
-| naive_cpu | CPU | [`bdfa68b04359`](https://github.com/sashajdn/psyduck/commit/bdfa68b04359733820164f95f76c8069303da405)\* | Aggregate throughput (GFLOP/s) | 0.355 | 0.638 | 0.709 | 0.740 | 0.746 | 1.058 | 0.686 | 0.594 | 0.563 | 0.207 | ❌ |
-| naive_cpu | CPU | `bdfa68b04359`\* | Kernel time (s) | 0.000004 | 0.000016 | 0.000115 | 0.000885 | 0.007032 | 0.039630 | 0.489186 | 4.522000 | 38.167563 | 831.913122 | ❌ |
+#### Relative to the naive baseline
 
-> Square matrix matmul benchmark framework first warmups the host / device machine before averaging over K iterations.
+Throughput is `optimization / naive`, so values above `1.00×` are faster.
+
+| Optimization | Target | Commit | N=4 | N=8 | N=16 | N=32 | N=64 | N=128 | N=256 | N=512 | N=1024 | N=2048 | N=4096 |
+|:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
+| naive | CPU | `bdfa68b04359`\* | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | — |
+| transposed_b | CPU | `ebabe625918c`\* | 0.98× | 1.26× | 1.63× | 1.90× | 2.15× | 1.49× | 2.42× | 3.06× | 3.20× | 8.48× | — |
+
+| Optimization | Target | Commit | Throughput ↑ | Cycles/add ↓ | Instructions/add ↓ | L1 misses/add ↓ | L2 misses/add ↓ | L3 misses/add ↓ | Memory-stall cycles/add ↓ |
+|:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|
+| naive | CPU | `bdfa68b04359`\* | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× |
+| transposed_b | CPU | `ebabe625918c`\* | 3.64× | 3.67× | 5.47× | 534× | 2,105× | 857× | 2.78× |
+
+#### Largest timing checkpoints
+
+| Variant | N | FLOPs/operation | Seconds/operation | Throughput |
+|:--|--:|--:|--:|--:|
+| Naive | 2048 | 17.180 billion | 83.191 | 0.207 GFLOP/s |
+| Transposed B | 4096 | 137.439 billion | 78.630 | 1.748 GFLOP/s |
 
 ## Run the matrix-add GPU validation
 
@@ -26,6 +57,20 @@ and compares the GPU result with the same addition performed by the naive CPU
 backend. A successful run validates the complete Rust-to-CUDA path: device
 allocation, host-to-device upload, kernel launch, CUDA event capture,
 device-to-host download, and result parity.
+
+## Optimizations
+
+### CPU
+
+#### Transposed
+
+- Naive case is memory bound: cache misses per hierarchy increaes over some N boundary, proxied to given cache size & B-stride size.
+- Transpose the `B` matrix for memory locality of the B-stride per `K`.
+- Improved cache-line utilization, packs 16 f32 per 64B cacheline from the K length stride per iteration.
+    - 1/16 in the naive case -> 16/16
+- Reduces probability of memory reads, for given B elements, from fetching from higher & more costly caches.
+- Increased computation cost initially, more memory locality improvements far exceeds this as N grows.
+    - B^T costs ~`O(K * M)`, whereas naive reads are O(M * N * K).
 
 ### One-time setup
 
