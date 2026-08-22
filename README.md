@@ -38,11 +38,6 @@ Throughput is `optimization / naive`, so values above `1.00×` are faster.
 | naive | CPU | `bdfa68b04359`\* | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | — |
 | transposed_b | CPU | `49f9e6e2b63c`\* | 0.98× | 1.26× | 1.63× | 1.90× | 2.15× | 1.49× | 2.42× | 3.06× | 3.20× | 8.48× | — |
 
-The matched counters use `N=1024`, logical CPU 2, one warmup, two individually
-sampled operations, and three process-level `perf` repetitions. `↑` is
-`optimization / naive`; `↓` is `naive / optimization`. Larger factors therefore
-always represent an improvement.
-
 | Optimization | Target | Commit | Throughput ↑ | Cycles/add ↓ | Instructions/add ↓ | L1 misses/add ↓ | L2 misses/add ↓ | L3 misses/add ↓ | Memory-stall cycles/add ↓ |
 |:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|
 | naive | CPU | `bdfa68b04359`\* | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× |
@@ -50,17 +45,10 @@ always represent an improvement.
 
 #### Largest timing checkpoints
 
-These are not shape-matched. They show the largest recorded timing point for
-each implementation while keeping a single operation below five minutes:
-
 | Variant | N | FLOPs/operation | Seconds/operation | Throughput |
 |:--|--:|--:|--:|--:|
 | Naive | 2048 | 17.180 billion | 83.191 | 0.207 GFLOP/s |
 | Transposed B | 4096 | 137.439 billion | 78.630 | 1.748 GFLOP/s |
-
-The transposed case performs 8× as much algorithmic work in slightly less wall
-time. This is an equal-time frontier comparison, not an apples-to-apples shape
-comparison.
 
 ## Run the matrix-add GPU validation
 
@@ -69,6 +57,20 @@ and compares the GPU result with the same addition performed by the naive CPU
 backend. A successful run validates the complete Rust-to-CUDA path: device
 allocation, host-to-device upload, kernel launch, CUDA event capture,
 device-to-host download, and result parity.
+
+## Optimizations
+
+### CPU
+
+#### Transposed
+
+- Naive case is memory bound: cache misses per hierarchy increaes over some N boundary, proxied to given cache size & B-stride size.
+- Transpose the `B` matrix for memory locality of the B-stride per `K`.
+- Improved cache-line utilization, packs 16 f32 per 64B cacheline from the K length stride per iteration.
+    - 1/16 in the naive case -> 16/16
+- Reduces probability of memory reads, for given B elements, from fetching from higher & more costly caches.
+- Increased computation cost initially, more memory locality improvements far exceeds this as N grows.
+    - B^T costs ~`O(K * M)`, whereas naive reads are O(M * N * K).
 
 ### One-time setup
 
