@@ -5,6 +5,10 @@ use tensor::{HostTensor, MatrixTensor, QuantizedFp, Shape};
 
 use crate::model::{ModelBackend, ModelError};
 
+use self::stride::Stride;
+
+pub mod stride;
+
 pub struct HostModelBackend<F> {
     _phantom: std::marker::PhantomData<F>,
 }
@@ -120,18 +124,38 @@ impl<F: QuantizedFp> ModelBackend<F> for HostModelBackend<F> {
 
         for i in 0..a.rows() {
             for j in 0..b_t.rows() {
-                // Set accumulator per K-stride.
-                let mut cij = F::zero();
+                // We `unroll` the for loop to create a stride of accumulators, such that we don't force the compiler
+                // to sequence adds over a single accumulator.
+                //
+                // A stride here allows the compiler & CPU to optimize interweaving via ILP by
+                // adding over a set of `LANES accumulators`, rather than a single one.
+                // Before finally summing across all lanes.
+                //
+                // This is because sequential adds to a single accumulator suffer from a read-after-write
+                // dependency chain. Strided accumulators do not suffer this consequence up to the length of the stride.
+                // Assumes a superscalar CPU.
+                //
+                // In theory, this should increase total bandwidth of FLOPs if we are indeed compute
+                // bound.
+                //
+                // Given the f32 add latency on the target CPU is `3`, we derive
+                // the next power of 2 > 3, which is `4`.
+                //
+                // We expect to the see the cycles per add to be reduced towards 1, from
+                // 3. This doesn't decrease the latency per add, rather hides this by
+                // increasing the number of adds we can concurrently execute per cycle (in theory).
+                //
+                // Memory, cache & instruction based counters should remain identical to the
+                // transponsed only case.
+                let mut stride = Stride::<4, F>::zeros();
 
-                // A[M, K], B[K, N], B^T[N, K]
-                // K is the same for a.cols() or b.rows().
                 for k in 0..a.cols() {
                     let aik = a.get(i, k)?;
-                    // This read is now contiguous along a cacheline.
                     let btjk = b_t.get(j, k)?;
-                    cij = cij + (aik * btjk);
+                    stride.add_next_lane(aik * btjk);
                 }
 
+                let cij = stride.sum();
                 c.set(i, j, cij)?;
             }
         }
