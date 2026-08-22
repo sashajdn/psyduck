@@ -14,6 +14,10 @@ impl ValidLaneCount for [(); 64] {}
 /// Round-robin scalar accumulators used to expose independent addition chains.
 ///
 /// Only the explicitly supported power-of-two lane counts can be instantiated:
+///
+/// NOTE: this implementation *did* not properly unroll, eventhough
+/// `add_next_lane` is marked `#[inline(always)]`. The compiler was not able to unroll the loop in `sum` because it is a dynamic loop over the lane count.
+/// This is why we have the `unroll_four!` macro, which is used in the `sum` method of the `Stride` struct.
 pub struct Stride<const LANES: usize, F>
 where
     F: QuantizedFp,
@@ -49,6 +53,28 @@ where
             .fold(F::zero(), |accumulator, &lane| accumulator + lane)
     }
 }
+
+macro_rules! unroll_four {
+    ($lane:ident => $body:block) => {{
+        {
+            const $lane: usize = 0;
+            $body
+        }
+        {
+            const $lane: usize = 1;
+            $body
+        }
+        {
+            const $lane: usize = 2;
+            $body
+        }
+        {
+            const $lane: usize = 3;
+            $body
+        }
+    }};
+}
+pub(crate) use unroll_four;
 
 #[cfg(test)]
 mod tests {
