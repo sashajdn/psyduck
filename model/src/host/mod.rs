@@ -5,6 +5,10 @@ use tensor::{HostTensor, MatrixTensor, QuantizedFp, Shape};
 
 use crate::model::{ModelBackend, ModelError};
 
+pub mod stride;
+
+const ADD_F32_LANES: usize = 4;
+
 pub struct HostModelBackend<F> {
     _phantom: std::marker::PhantomData<F>,
 }
@@ -120,18 +124,55 @@ impl<F: QuantizedFp> ModelBackend<F> for HostModelBackend<F> {
 
         for i in 0..a.rows() {
             for j in 0..b_t.rows() {
-                // Set accumulator per K-stride.
-                let mut cij = F::zero();
+                // We `unroll` the for loop to create a stride of accumulators, such that we don't force the compiler
+                // to sequence adds over a single accumulator.
+                //
+                // A stride here allows the compiler & CPU to optimize interweaving via ILP by
+                // adding over a set of `LANES accumulators`, rather than a single one.
+                // Before finally summing across all lanes.
+                //
+                // This is because sequential adds to a single accumulator suffer from a read-after-write
+                // dependency chain. Strided accumulators do not suffer this consequence up to the length of the stride.
+                // Assumes a superscalar CPU.
+                //
+                // In theory, this should increase total bandwidth of FLOPs if we are indeed compute
+                // bound.
+                //
+                // Given the f32 add latency on the target CPU is `3`, we derive
+                // the next power of 2 > 3, which is `4`.
+                //
+                // We expect to the see the cycles per add to be reduced towards 1, from
+                // 3. This doesn't decrease the latency per add, rather hides this by
+                // increasing the number of adds we can concurrently execute per cycle (in theory).
+                //
+                // Memory, cache & instruction based counters should remain identical to the
+                // transponsed only case.
+                let k_size = a.cols();
 
-                // A[M, K], B[K, N], B^T[N, K]
-                // K is the same for a.cols() or b.rows().
-                for k in 0..a.cols() {
-                    let aik = a.get(i, k)?;
-                    // This read is now contiguous along a cacheline.
-                    let btjk = b_t.get(j, k)?;
-                    cij = cij + (aik * btjk);
+                // Unroll the loop by `ADD_F32_LANES`, capture the unroll end component.
+                let unrolled_k_size = k_size - (k_size % ADD_F32_LANES);
+
+                // Roll over the k-stride, accumulating into a stride of accumulators.
+                let mut stride = [F::zero(); ADD_F32_LANES];
+                for k in (0..unrolled_k_size).step_by(ADD_F32_LANES) {
+                    stride::unroll_four!(LANE => {
+                        let aik = a.get(i, k + LANE)?;
+                        let btjk = b_t.get(j, k + LANE)?;
+                        stride[LANE] += aik * btjk;
+                    });
                 }
 
+                // Handle the remainder of the unrolling.
+                for k in unrolled_k_size..k_size {
+                    let aik = a.get(i, k)?;
+                    let btjk = b_t.get(j, k)?;
+                    stride[0] += aik * btjk;
+                }
+
+                // Sum over the stride of accumulators, reducing to a single value
+                // using binary summation. For `ADD_F32_LANES` this gives 3 summations
+                // rather than 4.
+                let cij = Self::binary_sum_over(&mut stride);
                 c.set(i, j, cij)?;
             }
         }
@@ -163,6 +204,24 @@ impl<F: QuantizedFp> ModelBackend<F> for HostModelBackend<F> {
     #[inline]
     fn transpose(target: &mut Self::Tensor<2>) -> Result<(), ModelError> {
         target.transpose().map_err(Into::into)
+    }
+}
+
+impl<F: QuantizedFp> HostModelBackend<F> {
+    #[inline(always)]
+    fn binary_sum_over(stride: &mut [F; ADD_F32_LANES]) -> F {
+        let mut width = ADD_F32_LANES;
+        while width > 1 {
+            let half = width / 2;
+
+            for lane in 0..half {
+                stride[lane] += stride[lane + half];
+            }
+
+            width = half;
+        }
+
+        stride[0]
     }
 }
 
@@ -236,5 +295,12 @@ mod tests {
             .expect("3x2 matrix should be transposable");
         assert_eq!((rectangular.rows(), rectangular.cols()), (2, 3));
         assert_eq!(rectangular.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn correct_binary_sum_over() {
+        let mut stride = &mut [1.0, 2.0, 3.0, 4.0];
+        let sum = HostModelBackend::<f32>::binary_sum_over(&mut stride);
+        assert_eq!(sum, 10.0);
     }
 }
