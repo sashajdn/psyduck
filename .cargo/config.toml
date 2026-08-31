@@ -1,0 +1,5 @@
+[unstable]
+profile-rustflags = true
+
+[profile.avx2]
+rustflags = ["-C", "target-feature=+avx2,+fma"]
