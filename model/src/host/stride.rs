@@ -54,6 +54,7 @@ where
     }
 }
 
+#[allow(unused)]
 macro_rules! unroll_four {
     ($lane:ident => $body:block) => {{
         {
@@ -74,6 +75,8 @@ macro_rules! unroll_four {
         }
     }};
 }
+
+#[allow(unused_imports)]
 pub(crate) use unroll_four;
 
 #[cfg(test)]

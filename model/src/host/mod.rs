@@ -126,55 +126,30 @@ impl<F: HostSimdDotProduct> ModelBackend<F> for HostModelBackend<F> {
         a.validate_matmul_target_with(b, c)?;
 
         // Transpose `b` for memory locality.
+        //
         // The k-stride over `b` is now contiguous given the
         // underlying is a Vec<F>.
-        //
-        // As we read cache-lines from memory, the following b-stride values are likely
-        // to already be in the cache, given we've packed the cacheline - reducing the likihood of a cache miss &
-        // more expensive cache read from a higher level of the memory hierarchy.
-        //
-        // Given a transpose operation is of order (K * M) per O(K * M * N) reads in the naive case. We are increasing the computation
-        // but reducing memory reads from caches further away from compute. Hence, memory locality improves.
-        //
-        // We should expect slightly worse performance for low N but performance to increase relative to N,
-        // as we grow pass the bound at which a given `b` K-stride fits into resident registers or memory.
-        //
-        // Before:
-        //        B{2}
-        // | 0 1 [2] |
-        // | 3 4 [5] |
-        // | 6 7 [8] |
-        //
-        // As read from Vec: [0, 1, [2], 3, 4, [5], 6, 7, [8]]
-        //
-        // After:
-        //
-        // | 0 3 6 |
-        // | 1 4 7 |
-        // | [2] [5] [8] |
-        //
-        // As read from Vec: [0, 3, 6, 1, 4, 7, [2], [5], [8]]
-        //
-        // Now we can see that the stride *is* contiguous in memory.
-        // This makes little differnce for N < 16.
-        // 16 given a f32 is 4 bytes, a cacheline is 64 bytes.
-        // So we can fit 16 f32 values in a cacheline.
-        //
-        // If we there can pack the entire cacheline from contiguous memory only *with*
-        // values we want at a given point in time, we should reduce cache misses
-        // quite substantially.
         let mut b_t = b.clone();
         b_t.transpose()?;
 
-        let k_size = a.cols();
+        let k = a.cols();
         for i in 0..a.rows() {
-            let a_row = &a.as_slice()[i * k_size..(i + 1) * k_size];
+            // Collect i-th row of `A`.
+            let a_row = &a.as_slice()[i * k..(i + 1) * k];
 
             for j in 0..b_t.rows() {
-                let b_row = &b_t.as_slice()[j * k_size..(j + 1) * k_size];
+                // Collect j-th (transposed) row of `B`.
+                let b_row = &b_t.as_slice()[j * k..(j + 1) * k];
 
-                let cij = F::single_simd_dot_product(a_row, b_row);
-                c.set(i, j, cij);
+                // Compute the dot product of the i-th row of `A` and the j-th row of `B`
+                // with SIMD acceleration.
+                //
+                // This allows to collapse the accumulution stage from `K` accumulations per NM
+                // to `K / SIMD_LANES` accumulations per NM,
+                //
+                // For cases K > SIMD_LANES, we could consider using S, SIMD accumulators &
+                // unrolling the loop across all S.
+                c.set(i, j, F::single_simd_dot_product(a_row, b_row))?;
             }
         }
 
@@ -297,12 +272,5 @@ mod tests {
             .expect("3x2 matrix should be transposable");
         assert_eq!((rectangular.rows(), rectangular.cols()), (2, 3));
         assert_eq!(rectangular.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    }
-
-    #[test]
-    fn correct_binary_sum_over() {
-        let mut stride = &mut [1.0, 2.0, 3.0, 4.0];
-        let sum = HostModelBackend::<f32>::binary_sum_over(&mut stride);
-        assert_eq!(sum, 10.0);
     }
 }
