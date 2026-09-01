@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use instrument::operation::{OperationTimer, TimingClock};
-use tensor::{HostTensor, MatrixTensor, QuantizedFp, Shape};
+use tensor::{HostTensor, MatrixTensor, Shape};
 
 use crate::model::{ModelBackend, ModelError};
 
@@ -86,26 +86,20 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBacken
         //
         // The k-stride over `b` is now contiguous given the
         // underlying is a Vec<F>.
-        let mut b_t = b.clone();
-        b_t.transpose()?;
+        let mut b_transposed = b.clone();
+        b_transposed.transpose()?;
 
-        let k = a.cols();
+        let k = a.columns();
         for i in 0..a.rows() {
             // Collect i-th row of `A`.
             let a_row = &a.as_slice()[i * k..(i + 1) * k];
 
-            for j in 0..b_t.rows() {
+            for j in 0..b_transposed.rows() {
                 // Collect j-th (transposed) row of `B`.
-                let b_row = &b_t.as_slice()[j * k..(j + 1) * k];
+                let b_row = &b_transposed.as_slice()[j * k..(j + 1) * k];
 
                 // Compute the dot product of the i-th row of `A` and the j-th row of `B`
-                // with SIMD acceleration.
-                //
-                // This allows to collapse the accumulution stage from `K` accumulations per NM
-                // to `K / SIMD_LANES` accumulations per NM,
-                //
-                // For cases K > SIMD_LANES, we could consider using S, SIMD accumulators &
-                // unrolling the loop across all S.
+                // with SIMD acceleration across `ACCUMULATORS` SIMD registers.
                 c.set(i, j, F::simd_dot_product(a_row, b_row))?;
             }
         }
@@ -113,6 +107,7 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBacken
         Ok(())
     }
 
+    #[inline]
     fn try_add(
         &self,
         a: &Self::Tensor<2>,
@@ -134,28 +129,9 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBacken
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn transpose(target: &mut Self::Tensor<2>) -> Result<(), ModelError> {
         target.transpose().map_err(Into::into)
-    }
-}
-
-impl<F: QuantizedFp> HostModelBackend<F> {
-    #[inline(always)]
-    #[allow(unused)]
-    fn binary_sum_over(stride: &mut [F; LANES]) -> F {
-        let mut width = LANES;
-        while width > 1 {
-            let half = width / 2;
-
-            for lane in 0..half {
-                stride[lane] += stride[lane + half];
-            }
-
-            width = half;
-        }
-
-        stride[0]
     }
 }
 
@@ -233,7 +209,7 @@ mod tests {
     fn supports_a_generic_simd_lane_count() {
         let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
 
-        let result = <f32 as SimdDotProduct<4, 2>>::simd_dot_product(&values, &values);
+        let result = <f32 as SimdDotProduct<4, 8>>::simd_dot_product(&values, &values);
 
         assert_eq!(result, 91.0);
     }
@@ -249,12 +225,12 @@ mod tests {
         let mut rectangular = rectangular_matrix(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         HostModelBackend::<f32>::transpose(&mut rectangular)
             .expect("2x3 matrix should be transposable");
-        assert_eq!((rectangular.rows(), rectangular.cols()), (3, 2));
+        assert_eq!((rectangular.rows(), rectangular.columns()), (3, 2));
         assert_eq!(rectangular.as_slice(), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
 
         HostModelBackend::<f32>::transpose(&mut rectangular)
             .expect("3x2 matrix should be transposable");
-        assert_eq!((rectangular.rows(), rectangular.cols()), (2, 3));
+        assert_eq!((rectangular.rows(), rectangular.columns()), (2, 3));
         assert_eq!(rectangular.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 }
