@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    simd::StdFloat,
+    time::{Duration, Instant},
+};
 
 use instrument::operation::{OperationTimer, TimingClock};
 use tensor::{HostTensor, MatrixTensor, QuantizedFp, Shape};
@@ -35,7 +38,23 @@ impl HostSimdDotProduct for f32 {
         for (a_chunk, b_chunk) in a_chunks.iter().zip(b_chunks.iter()) {
             let a_simd = f32x8::from_slice(a_chunk);
             let b_simd = f32x8::from_slice(b_chunk);
-            accumulator += a_simd * b_simd;
+
+            // Fused FMA.
+            //
+            // A fused multiply-add computes `acc + (a * b)` as one instruction
+            // and counts as two FLOPs.
+            //
+            // On Broadwell, FMA latency is roughly 5 cycles, compared with roughly
+            // 3 cycles for a dependent vector-add. A single FMA accumulator can
+            // therefore be more latency-bound than a separate add chain.
+            //
+            // Multiple independent accumulators hide that latency and allow the CPU
+            // to exploit its two FMA execution pipelines. At sufficient independence,
+            // FMA reduces instruction pressure and can double peak arithmetic
+            // throughput compared with separate vector multiply and add instructions.
+            //
+            // Therefore, for a single SIMD this might indeed be a regression.
+            accumulator = a_simd.mul_add(b_simd, accumulator);
         }
 
         // Reduce the SIMD accumulator to a single value.
