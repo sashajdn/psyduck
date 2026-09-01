@@ -113,8 +113,27 @@ device-to-host download, and result parity.
   eight-accumulator array.
 - Throughput still falls at `N>=2048`; this optimization improves compute
   scheduling but does not solve the next memory-locality boundary.
-- The complete sweep, counters, full-range reports, and assembly are retained
-  in the [optimization report](optimizations/multiple-simd-accumulators/README.md).
+
+##### Concrete implementation regression check
+
+The concrete eight-accumulator implementation was regression checked at
+[`832f4d9`](https://github.com/sashajdn/psyduck/commit/832f4d9ae4b3a5bfb8399077de434d899fab5c03)
+with five pinned `N=1024` processes. Each process performed three warmups and
+ten measured operations under the same AVX2, FMA, and perf configuration:
+
+| Metric | Prior unrolled acc8 | Concrete acc8 | Difference |
+|:--|--:|--:|--:|
+| Throughput | 10.586 GFLOP/s | 10.818 GFLOP/s | +2.20% |
+| Mean p50 latency | 202.505 ms | 198.108 ms | -2.17% |
+| Cycles/FLOP | 0.236357 | 0.232146 | -1.78% |
+| Instructions/FLOP | 0.203869 | 0.203821 | -0.02% |
+| Cycles/instruction | 1.159 | 1.139 | -1.76% |
+
+All five deterministic correctness checks passed. The low-single-digit
+differences show no performance regression from replacing the tuning macro
+expansion with the concrete implementation. The complete sweep, counters,
+full-range reports, and assembly are retained in the
+[optimization report](optimizations/multiple-simd-accumulators/README.md).
 
 
 ### One-time setup
