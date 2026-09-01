@@ -1,76 +1,14 @@
-use std::{
-    simd::StdFloat,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use instrument::operation::{OperationTimer, TimingClock};
 use tensor::{HostTensor, MatrixTensor, QuantizedFp, Shape};
 
 use crate::model::{ModelBackend, ModelError};
 
-use std::simd::{f32x8, num::SimdFloat};
+use self::simd::{ACCUMULATORS, LANES, SimdDotProduct};
 
+pub mod simd;
 pub mod stride;
-
-trait HostSimdDotProduct: QuantizedFp {
-    const LANES: usize;
-
-    fn single_simd_dot_product(a: &[Self], b: &[Self]) -> Self;
-}
-
-impl HostSimdDotProduct for f32 {
-    // The target machine (AVX2) has 256-bit-wide registers, which can hold
-    // eight f32 values at 32 bits each.
-    const LANES: usize = 8;
-
-    fn single_simd_dot_product(a: &[Self], b: &[Self]) -> Self {
-        // Asset that lengths of the two vectors are identical over K.
-        assert_eq!(a.len(), b.len());
-
-        // Setup SIMD acculumator & set each land to zero.
-        let mut accumulator = f32x8::splat(0.0);
-
-        // Split vectors in `SIMD_LANE` chunks.
-        let (a_chunks, a_remainder) = a.as_chunks::<{ Self::LANES }>();
-        let (b_chunks, b_remainder) = b.as_chunks::<{ Self::LANES }>();
-
-        // Iterate over all chunks exactly & accumulate.
-        for (a_chunk, b_chunk) in a_chunks.iter().zip(b_chunks.iter()) {
-            let a_simd = f32x8::from_slice(a_chunk);
-            let b_simd = f32x8::from_slice(b_chunk);
-
-            // Fused FMA.
-            //
-            // A fused multiply-add computes `acc + (a * b)` as one instruction
-            // and counts as two FLOPs.
-            //
-            // On Broadwell, FMA latency is roughly 5 cycles, compared with roughly
-            // 3 cycles for a dependent vector-add. A single FMA accumulator can
-            // therefore be more latency-bound than a separate add chain.
-            //
-            // Multiple independent accumulators hide that latency and allow the CPU
-            // to exploit its two FMA execution pipelines. At sufficient independence,
-            // FMA reduces instruction pressure and can double peak arithmetic
-            // throughput compared with separate vector multiply and add instructions.
-            //
-            // Therefore, for a single SIMD this might indeed be a regression.
-            accumulator = a_simd.mul_add(b_simd, accumulator);
-        }
-
-        // Reduce the SIMD accumulator to a single value.
-        let vector_sum = accumulator.reduce_sum();
-
-        // Handle the remainder of the vectors that don't fit into a full SIMD chunk.
-        vector_sum
-            + a_remainder
-                .iter()
-                .zip(b_remainder.iter())
-                .map(|(&a, &b)| a * b)
-                .sum::<f32>()
-    }
-}
-
-const SIMD_LANES: usize = <f32 as HostSimdDotProduct>::LANES;
 
 pub struct HostModelBackend<F> {
     _phantom: std::marker::PhantomData<F>,
@@ -112,7 +50,7 @@ impl<F> OperationTimer for HostModelBackend<F> {
     }
 }
 
-impl<F: HostSimdDotProduct> ModelBackend<F> for HostModelBackend<F> {
+impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBackend<F> {
     type Tensor<const R: usize> = HostTensor<F, R>;
 
     #[inline]
@@ -168,7 +106,7 @@ impl<F: HostSimdDotProduct> ModelBackend<F> for HostModelBackend<F> {
                 //
                 // For cases K > SIMD_LANES, we could consider using S, SIMD accumulators &
                 // unrolling the loop across all S.
-                c.set(i, j, F::single_simd_dot_product(a_row, b_row))?;
+                c.set(i, j, F::simd_dot_product(a_row, b_row))?;
             }
         }
 
@@ -205,8 +143,8 @@ impl<F: HostSimdDotProduct> ModelBackend<F> for HostModelBackend<F> {
 impl<F: QuantizedFp> HostModelBackend<F> {
     #[inline(always)]
     #[allow(unused)]
-    fn binary_sum_over(stride: &mut [F; SIMD_LANES]) -> F {
-        let mut width = SIMD_LANES;
+    fn binary_sum_over(stride: &mut [F; LANES]) -> F {
+        let mut width = LANES;
         while width > 1 {
             let half = width / 2;
 
@@ -225,7 +163,7 @@ impl<F: QuantizedFp> HostModelBackend<F> {
 mod tests {
     use tensor::{HostTensor, Shape};
 
-    use super::{HostModelBackend, ModelBackend};
+    use super::{HostModelBackend, ModelBackend, SimdDotProduct};
 
     fn square_matrix(values: &[f32; 4]) -> HostTensor<f32, 2> {
         let mut tensor = HostTensor::zeros(Shape::new([2, 2]));
@@ -271,6 +209,33 @@ mod tests {
             .expect("repeated matmul should overwrite its target");
 
         assert_eq!(target.as_slice(), &[19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn correctly_accumulates_full_simd_chunks_and_the_remainder() {
+        let backend = HostModelBackend::<f32>::new();
+        let mut a = HostTensor::zeros(Shape::new([1, 10]));
+        let mut b = HostTensor::zeros(Shape::new([10, 1]));
+        let mut target = HostTensor::zeros(Shape::new([1, 1]));
+
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        a.as_mut_slice().copy_from_slice(&values);
+        b.as_mut_slice().copy_from_slice(&values);
+
+        backend
+            .try_matmul(&a, &b, &mut target)
+            .expect("a full SIMD chunk and its remainder should be multipliable");
+
+        assert_eq!(target.as_slice(), &[385.0]);
+    }
+
+    #[test]
+    fn supports_a_generic_simd_lane_count() {
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+
+        let result = <f32 as SimdDotProduct<4, 2>>::simd_dot_product(&values, &values);
+
+        assert_eq!(result, 91.0);
     }
 
     #[test]
