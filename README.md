@@ -20,7 +20,7 @@ data inside `try_matmul`, that preparation is included.
 |:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
 | naive | CPU | [`bdfa68b04359`](https://github.com/sashajdn/psyduck/commit/bdfa68b04359733820164f95f76c8069303da405)\* | 0.355 | 0.638 | 0.709 | 0.740 | 0.746 | 1.058 | 0.686 | 0.594 | 0.563 | 0.207 | ❌ |
 | transposed_b | CPU | [`ebabe625918c`](https://github.com/sashajdn/psyduck/commit/ebabe625918c5451342b973d91861352030fbde9)\* | 0.346 | 0.806 | 1.156 | 1.404 | 1.607 | 1.575 | 1.659 | 1.820 | 1.803 | 1.756 | 1.748 |
-| single_simd | CPU | [`bd540a446c67`](https://github.com/sashajdn/psyduck/commit/bd540a446c671eeaf8db8f5a1e3ed0d1260708e0)\* | 0.214 | 0.664 | 1.046 | 2.226 | 2.816 | 4.694 | 6.927 | 8.783 | 10.932 | 6.386 | 6.259 |
+| SIMD | CPU | [`bd540a446c67`](https://github.com/sashajdn/psyduck/commit/bd540a446c671eeaf8db8f5a1e3ed0d1260708e0)\* | 0.214 | 0.664 | 1.046 | 2.226 | 2.816 | 4.694 | 6.927 | 8.783 | 10.932 | 6.386 | 6.259 |
 
 #### Kernel time (seconds)
 
@@ -28,8 +28,7 @@ data inside `try_matmul`, that preparation is included.
 |:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
 | naive | CPU | `bdfa68b04359`\* | 0.000004 | 0.000016 | 0.000115 | 0.000885 | 0.007032 | 0.039630 | 0.489186 | 4.522000 | 38.167563 | 831.913122 | ❌ |
 | transposed_b | CPU | `ebabe625918c`\* | 0.000004 | 0.000013 | 0.000071 | 0.000467 | 0.003263 | 0.026632 | 0.202230 | 1.474606 | 11.912170 | 97.847109 | 786.297922 |
-| single_simd | CPU | `bd540a446c67`\* | 0.000006 | 0.000015 | 0.000078 | 0.000294 | 0.001862 | 0.008935 | 0.048439 | 0.305638 | 1.964422 | 26.900999 | 219.586526 |
-
+| SIMD | CPU | `bd540a446c67`\* | 0.000006 | 0.000015 | 0.000078 | 0.000294 | 0.001862 | 0.008935 | 0.048439 | 0.305638 | 1.964422 | 26.900999 | 219.586526 |
 
 #### Relative to the naive baseline
 
@@ -39,13 +38,16 @@ Throughput is `optimization / naive`, so values above `1.00×` are faster.
 |:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--:|
 | naive | CPU | `bdfa68b04359`\* | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | — |
 | transposed_b | CPU | `ebabe625918c`\* | 0.98× | 1.26× | 1.63× | 1.90× | 2.15× | 1.49× | 2.42× | 3.06× | 3.20× | 8.48× | — |
-| single_simd | CPU | `bd540a446c67`\* | 0.60× | 1.04× | 1.48× | 3.01× | 3.77× | 4.44× | 10.10× | 14.79× | 19.42× | 30.85× | — |
+| SIMD | CPU | `bd540a446c67`\* | 0.60× | 1.04× | 1.48× | 3.01× | 3.77× | 4.44× | 10.10× | 14.79× | 19.42× | 30.85× | — |
+
+The hardware-counter comparison below uses the matched `N=1024` protocol.
 
 | Optimization | Target | Commit | Throughput ↑ | Cycles/add ↓ | Instructions/add ↓ | L1 misses/add ↓ | L2 misses/add ↓ | L3 misses/add ↓ | Memory-stall cycles/add ↓ |
 |:--|:--|:--|--:|--:|--:|--:|--:|--:|--:|
 | naive | CPU | `bdfa68b04359`\* | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× |
 | transposed_b | CPU | `ebabe625918c`\* | 3.64× | 3.67× | 5.47× | 534× | 2,105× | 857× | 2.78× |
-| single_simd | CPU | `bd540a446c67`\* | 21.83× | 21.85× | 14.04× | 23.44× | 405× | 60.09× | 84.52× |
+| SIMD | CPU | `bd540a446c67`\* | 21.83× | 21.85× | 14.04× | 23.44× | 405× | 60.09× | 84.52× |
+| SIMD + Fused FMA | CPU | [`5e45def7fbf7`](https://github.com/sashajdn/psyduck/commit/5e45def7fbf77967e9803586c85aed9b25d150a0)\* | 16.05× | 16.82× | 42.86× | 36.46× | 256× | 67.55× | 9.00× |
 
 #### Largest timing checkpoints
 
@@ -53,7 +55,7 @@ Throughput is `optimization / naive`, so values above `1.00×` are faster.
 |:--|--:|--:|--:|--:|
 | Naive | 2048 | 17.180 billion | 83.191 | 0.207 GFLOP/s |
 | Transposed B | 4096 | 137.439 billion | 78.630 | 1.748 GFLOP/s |
-| Single SIMD | 4096 | 137.439 billion | 21.959 | 6.259 GFLOP/s |
+| SIMD | 4096 | 137.439 billion | 21.959 | 6.259 GFLOP/s |
 
 ## Run the matrix-add GPU validation
 
@@ -77,7 +79,7 @@ device-to-host download, and result parity.
 - Increased computation cost initially, more memory locality improvements far exceeds this as N grows.
     - B^T costs ~`O(K * M)`, whereas naive reads are O(M * N * K).
 
-#### Single SIMD accumulator
+#### SIMD accumulator
 
 - Naive unrolling didn't work due to compiler optimization for autovectorization of the mul no longer viable.
 - Instead, leveraged 256-bit SIMD accumulators with nightly rust, to give 8 lanes of accumulators for f32
@@ -85,6 +87,17 @@ device-to-host download, and result parity.
   additions over the K-stride.
 - In effect allowing for 8x additions per iteration of the K-stride
 - Still memory bound for `N > 1024`
+
+#### SIMD + Fused FMA
+
+- The premise follows: we can fuse the add & multiple into a single instruction with 5 cycle latency on the target machine.
+- This is an improvement in terms of instructions to 2 separate instructions for add & multiple respectively with 3 cycle latency.
+- However, this is a 30% throughput degradation relative to SIMD without FMA.
+- The rationale being: the 2 instruction method has 2 instructions each with 3 cycle latency, which is lower than the 5 cycle latency for 5.
+- The CPU can run the multiple & add instructions concurrently, but the fused FMA forms a dependency chain.
+- However, the 5 cycle latency actually lends crededance to improving overall throughput at the cost of latency, if we had more registers to work it.
+- Thats exactly what we can do with multiple SIMD registers.
+- The complete benchmark, counters, and assembly are retained in the [optimization report](optimizations/fused-fma-single-accumulator/README.md).
 
 
 ### One-time setup
