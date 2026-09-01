@@ -21,6 +21,7 @@ data inside `try_matmul`, that preparation is included.
 | naive | CPU | [`bdfa68b04359`](https://github.com/sashajdn/psyduck/commit/bdfa68b04359733820164f95f76c8069303da405)\* | 0.355 | 0.638 | 0.709 | 0.740 | 0.746 | 1.058 | 0.686 | 0.594 | 0.563 | 0.207 | ❌ |
 | transposed_b | CPU | [`ebabe625918c`](https://github.com/sashajdn/psyduck/commit/ebabe625918c5451342b973d91861352030fbde9)\* | 0.346 | 0.806 | 1.156 | 1.404 | 1.607 | 1.575 | 1.659 | 1.820 | 1.803 | 1.756 | 1.748 |
 | SIMD | CPU | [`bd540a446c67`](https://github.com/sashajdn/psyduck/commit/bd540a446c671eeaf8db8f5a1e3ed0d1260708e0)\* | 0.214 | 0.664 | 1.046 | 2.226 | 2.816 | 4.694 | 6.927 | 8.783 | 10.932 | 6.386 | 6.259 |
+| SIMD + FMA + 8 accumulators | CPU | [`2f811da1df5b`](https://github.com/sashajdn/psyduck/commit/2f811da1df5b589e24c4277096456082bb5c84ae)\* | 0.118 | 0.612 | 1.279 | 1.863 | 4.095 | 6.286 | 7.440 | 9.436 | 10.558 | 6.366 | 6.144 |
 
 #### Kernel time (seconds)
 
@@ -29,6 +30,7 @@ data inside `try_matmul`, that preparation is included.
 | naive | CPU | `bdfa68b04359`\* | 0.000004 | 0.000016 | 0.000115 | 0.000885 | 0.007032 | 0.039630 | 0.489186 | 4.522000 | 38.167563 | 831.913122 | ❌ |
 | transposed_b | CPU | `ebabe625918c`\* | 0.000004 | 0.000013 | 0.000071 | 0.000467 | 0.003263 | 0.026632 | 0.202230 | 1.474606 | 11.912170 | 97.847109 | 786.297922 |
 | SIMD | CPU | `bd540a446c67`\* | 0.000006 | 0.000015 | 0.000078 | 0.000294 | 0.001862 | 0.008935 | 0.048439 | 0.305638 | 1.964422 | 26.900999 | 219.586526 |
+| SIMD + FMA + 8 accumulators | CPU | `2f811da1df5b`\* | 0.000011 | 0.000017 | 0.000064 | 0.000352 | 0.001280 | 0.006673 | 0.045099 | 0.284487 | 2.033931 | 26.988662 | 223.678689 |
 
 #### Relative to the naive baseline
 
@@ -39,6 +41,7 @@ Throughput is `optimization / naive`, so values above `1.00×` are faster.
 | naive | CPU | `bdfa68b04359`\* | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× | — |
 | transposed_b | CPU | `ebabe625918c`\* | 0.98× | 1.26× | 1.63× | 1.90× | 2.15× | 1.49× | 2.42× | 3.06× | 3.20× | 8.48× | — |
 | SIMD | CPU | `bd540a446c67`\* | 0.60× | 1.04× | 1.48× | 3.01× | 3.77× | 4.44× | 10.10× | 14.79× | 19.42× | 30.85× | — |
+| SIMD + FMA + 8 accumulators | CPU | `2f811da1df5b`\* | 0.33× | 0.96× | 1.80× | 2.52× | 5.49× | 5.94× | 10.85× | 15.89× | 18.75× | 30.75× | — |
 
 The hardware-counter comparison below uses the matched `N=1024` protocol.
 
@@ -56,6 +59,7 @@ The hardware-counter comparison below uses the matched `N=1024` protocol.
 | Naive | 2048 | 17.180 billion | 83.191 | 0.207 GFLOP/s |
 | Transposed B | 4096 | 137.439 billion | 78.630 | 1.748 GFLOP/s |
 | SIMD | 4096 | 137.439 billion | 21.959 | 6.259 GFLOP/s |
+| SIMD + FMA + 8 accumulators | 4096 | 137.439 billion | 22.368 | 6.144 GFLOP/s |
 
 ## Run the matrix-add GPU validation
 
@@ -98,6 +102,38 @@ device-to-host download, and result parity.
 - However, the 5 cycle latency actually lends crededance to improving overall throughput at the cost of latency, if we had more registers to work it.
 - Thats exactly what we can do with multiple SIMD registers.
 - The complete benchmark, counters, and assembly are retained in the [optimization report](optimizations/fused-fma-single-accumulator/README.md).
+
+#### Multiple SIMD accumulators
+
+- Explicitly unrolls independent FMA dependency chains so LLVM keeps the
+  accumulator bank in YMM registers rather than dynamically indexed stack slots.
+- An interleaved sweep over `1, 2, 3, 4, 5, 6, 8, 10, 12` accumulators selects
+  eight as the best count on the Xeon D-1531.
+- Eight unrolled accumulators improve FLOPs/cycle by 25.50% over the rolled
+  eight-accumulator array.
+- Throughput still falls at `N>=2048`; this optimization improves compute
+  scheduling but does not solve the next memory-locality boundary.
+
+##### Concrete implementation regression check
+
+The concrete eight-accumulator implementation was regression checked at
+[`832f4d9`](https://github.com/sashajdn/psyduck/commit/832f4d9ae4b3a5bfb8399077de434d899fab5c03)
+with five pinned `N=1024` processes. Each process performed three warmups and
+ten measured operations under the same AVX2, FMA, and perf configuration:
+
+| Metric | Prior unrolled acc8 | Concrete acc8 | Difference |
+|:--|--:|--:|--:|
+| Throughput | 10.586 GFLOP/s | 10.818 GFLOP/s | +2.20% |
+| Mean p50 latency | 202.505 ms | 198.108 ms | -2.17% |
+| Cycles/FLOP | 0.236357 | 0.232146 | -1.78% |
+| Instructions/FLOP | 0.203869 | 0.203821 | -0.02% |
+| Cycles/instruction | 1.159 | 1.139 | -1.76% |
+
+All five deterministic correctness checks passed. The low-single-digit
+differences show no performance regression from replacing the tuning macro
+expansion with the concrete implementation. The complete sweep, counters,
+full-range reports, and assembly are retained in the
+[optimization report](optimizations/multiple-simd-accumulators/README.md).
 
 
 ### One-time setup

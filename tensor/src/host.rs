@@ -50,13 +50,13 @@ impl<F: QuantizedFp> HostTensor<F, 2> {
     }
 
     #[inline]
-    pub fn cols(&self) -> usize {
+    pub fn columns(&self) -> usize {
         self.shape().cols()
     }
 
     #[inline]
     pub fn get(&self, x: usize, y: usize) -> Result<F, MatrixError> {
-        let cols = self.cols();
+        let cols = self.columns();
 
         x.checked_mul(cols)
             .and_then(|offset| offset.checked_add(y))
@@ -68,7 +68,7 @@ impl<F: QuantizedFp> HostTensor<F, 2> {
 
     #[inline]
     pub fn set(&mut self, x: usize, y: usize, v: F) -> Result<(), MatrixError> {
-        let cols = self.cols();
+        let cols = self.columns();
 
         let xy = x
             .checked_mul(cols)
@@ -83,7 +83,7 @@ impl<F: QuantizedFp> HostTensor<F, 2> {
 
     #[inline]
     pub fn swap(&mut self, x1: usize, y1: usize, x2: usize, y2: usize) -> Result<(), MatrixError> {
-        let cols = self.cols();
+        let cols = self.columns();
         let index1 = x1
             .checked_mul(cols)
             .and_then(|offset| offset.checked_add(y1))
@@ -105,7 +105,7 @@ impl<F: QuantizedFp> HostTensor<F, 2> {
     /// Transposes this row-major matrix in place.
     pub fn transpose(&mut self) -> Result<(), MatrixError> {
         let rows = self.rows();
-        let cols = self.cols();
+        let cols = self.columns();
         let mut visited = vec![false; self.inner.len()];
 
         for start in 0..self.inner.len() {
