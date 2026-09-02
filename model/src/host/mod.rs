@@ -1,12 +1,19 @@
-use std::time::{Duration, Instant};
+use std::{
+    ops::Deref,
+    time::{Duration, Instant},
+};
 
 use instrument::operation::{OperationTimer, TimingClock};
 use tensor::{HostTensor, MatrixTensor, Shape};
 
 use crate::model::{ModelBackend, ModelError};
 
-use self::simd::{ACCUMULATORS, LANES, SimdDotProduct};
+use self::{
+    modifier::{Accumulate, OutputElementWiseModifier},
+    simd::{ACCUMULATORS, LANES, SimdDotProduct},
+};
 
+pub(crate) mod modifier;
 pub mod simd;
 pub mod stride;
 
@@ -74,7 +81,7 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBacken
         Ok(HostTensor::zeros(shape))
     }
 
-    fn try_matmul(
+    fn try_matmul<const TM: usize, const TN: usize, const TK: usize>(
         &self,
         a: &Self::Tensor<2>,
         b: &Self::Tensor<2>,
@@ -82,25 +89,45 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBacken
     ) -> Result<(), ModelError> {
         a.validate_matmul_target_with(b, c)?;
 
+        // Collect dimensionality.
+        let m = a.rows();
+        let n = b.columns();
+        let k = a.columns();
+
+        // Construct tile shapes for the inner matmul kernel.
+        let a_tile_shape = Shape::new([TM, TK]);
+        let b_tile_shape = Shape::new([TN, TK]);
+        let c_tile_shape = Shape::new([TM, TN]);
+
         // Transpose `b` for memory locality.
         //
-        // The k-stride over `b` is now contiguous given the
-        // underlying is a Vec<F>.
+        // The tiled k-stride over `b` is now contiguous given the
+        // underlying is a Vec<F> for all tiles.
         let mut b_transposed = b.clone();
         b_transposed.transpose()?;
 
-        let k = a.columns();
-        for i in 0..a.rows() {
-            // Collect i-th row of `A`.
-            let a_row = &a.as_slice()[i * k..(i + 1) * k];
+        // Perform the matrix multiplication with tiling & a SIMD accelerated
+        // inner dot product over tiles.
+        for i in (0..m).step_by(TM) {
+            for j in (0..n).step_by(TN) {
+                // Build tile of C{m, n} for C outputs.
+                let mut c_tile = self.alloc(c_tile_shape.clone())?;
 
-            for j in 0..b_transposed.rows() {
-                // Collect j-th (transposed) row of `B`.
-                let b_row = &b_transposed.as_slice()[j * k..(j + 1) * k];
+                for kk in (0..k).step_by(TK) {
+                    // Construct resident tiles.
+                    let a_tile = a.copy_tile([i, kk], a_tile_shape.clone())?;
+                    let b_tile = b_transposed.copy_tile([j, kk], b_tile_shape.clone())?;
 
-                // Compute the dot product of the i-th row of `A` and the j-th row of `B`
-                // with SIMD acceleration across `ACCUMULATORS` SIMD registers.
-                c.set(i, j, F::simd_dot_product(a_row, b_row))?;
+                    // Perform the inner matmul kernel with SIMD acceleration over constructed tiles.
+                    self.try_matmul_kernel_inner::<Accumulate>(
+                        &a_tile,
+                        MaybeTransposedMatrix::transposed(&b_tile),
+                        &mut c_tile,
+                    )?;
+                }
+
+                // Write c_tile back to output.
+                c.write_tile([i, j], &c_tile)?;
             }
         }
 
@@ -132,6 +159,70 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBacken
     #[inline(always)]
     fn transpose(target: &mut Self::Tensor<2>) -> Result<(), ModelError> {
         target.transpose().map_err(Into::into)
+    }
+}
+
+enum MaybeTransposedMatrix<'a, F: SimdDotProduct<LANES, ACCUMULATORS>> {
+    NotTransposed(&'a mut HostTensor<F, 2>),
+    Transposed(&'a HostTensor<F, 2>),
+}
+
+impl<F: SimdDotProduct<LANES, ACCUMULATORS>> Deref for MaybeTransposedMatrix<'_, F> {
+    type Target = HostTensor<F, 2>;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::NotTransposed(matrix) => matrix,
+            Self::Transposed(matrix) => matrix,
+        }
+    }
+}
+
+impl<'a, F: SimdDotProduct<LANES, ACCUMULATORS>> MaybeTransposedMatrix<'a, F> {
+    fn transposed(matrix: &'a HostTensor<F, 2>) -> Self {
+        Self::Transposed(matrix)
+    }
+
+    fn not_transposed(matrix: &'a mut HostTensor<F, 2>) -> Self {
+        Self::NotTransposed(matrix)
+    }
+}
+
+impl<F: SimdDotProduct<LANES, ACCUMULATORS>> HostModelBackend<F> {
+    fn try_matmul_kernel_inner<Mod: OutputElementWiseModifier<F>>(
+        &self,
+        a_tile: &HostTensor<F, 2>,
+        b_tile: MaybeTransposedMatrix<F>,
+        c_tile: &mut HostTensor<F, 2>,
+    ) -> Result<(), ModelError> {
+        a_tile.validate_matmul_target_with(&*b_tile, c_tile)?;
+
+        let b_transposed = match b_tile {
+            MaybeTransposedMatrix::NotTransposed(b) => {
+                b.transpose()?;
+                b
+            }
+            MaybeTransposedMatrix::Transposed(b_t) => b_t,
+        };
+
+        let k = a_tile.columns();
+        for i in 0..a_tile.rows() {
+            // Collect i-th row of `A`.
+            let a_row = &a_tile.as_slice()[i * k..(i + 1) * k];
+
+            for j in 0..b_transposed.rows() {
+                // Collect j-th (transposed) row of `B`.
+                let b_row = &b_transposed.as_slice()[j * k..(j + 1) * k];
+
+                // Compute the dot product of the i-th row of `A` and the j-th row of `B`
+                // with SIMD acceleration across `ACCUMULATORS` SIMD registers.
+                c_tile.with_mut(i, j, |current_value| {
+                    Mod::apply(current_value, F::simd_dot_product(a_row, b_row));
+                })?;
+            }
+        }
+
+        Ok(())
     }
 }
 

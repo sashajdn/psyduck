@@ -7,7 +7,7 @@ mod macros;
 pub(crate) const LANES: usize = 8;
 pub(crate) const ACCUMULATORS: usize = 8;
 
-pub(crate) trait SimdVector<T, const LANES: usize>: Copy
+pub trait SimdVector<T, const LANES: usize>: Copy
 where
     T: QuantizedFp,
 {
@@ -46,7 +46,7 @@ impl<const LANES: usize> SimdVector<f32, LANES> for Simd<f32, LANES> {
     }
 }
 
-pub(crate) trait SimdDotProduct<const LANES: usize, const ACCUMULATORS: usize>:
+pub trait SimdDotProduct<const LANES: usize, const ACCUMULATORS: usize>:
     QuantizedFp + Sized
 {
     type Vector: SimdVector<Self, LANES>;
