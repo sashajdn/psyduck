@@ -1,4 +1,4 @@
-use std::simd::{Simd, StdFloat, num::SimdFloat};
+use std::simd::{Simd, num::SimdFloat};
 
 use tensor::QuantizedFp;
 
@@ -7,14 +7,14 @@ mod macros;
 pub(crate) const LANES: usize = 8;
 pub(crate) const ACCUMULATORS: usize = 8;
 
-pub(crate) trait SimdVector<T, const LANES: usize>: Copy
+pub trait SimdVector<T, const LANES: usize>: Copy
 where
     T: QuantizedFp,
 {
     #[allow(dead_code)]
     fn splat(initial: T) -> Self;
     fn from_array(lanes: &[T; LANES]) -> Self;
-    fn mul_add(self, multiplier: Self, accumulator: Self) -> Self;
+    fn multiply(self, rhs: Self) -> Self;
     fn add(self, rhs: Self) -> Self;
     fn sum(self) -> T;
 }
@@ -31,8 +31,8 @@ impl<const LANES: usize> SimdVector<f32, LANES> for Simd<f32, LANES> {
     }
 
     #[inline(always)]
-    fn mul_add(self, multiplier: Self, accumulator: Self) -> Self {
-        StdFloat::mul_add(self, multiplier, accumulator)
+    fn multiply(self, rhs: Self) -> Self {
+        self * rhs
     }
 
     #[inline(always)]
@@ -46,7 +46,7 @@ impl<const LANES: usize> SimdVector<f32, LANES> for Simd<f32, LANES> {
     }
 }
 
-pub(crate) trait SimdDotProduct<const LANES: usize, const ACCUMULATORS: usize>:
+pub trait SimdDotProduct<const LANES: usize, const ACCUMULATORS: usize>:
     QuantizedFp + Sized
 {
     type Vector: SimdVector<Self, LANES>;
@@ -55,7 +55,7 @@ pub(crate) trait SimdDotProduct<const LANES: usize, const ACCUMULATORS: usize>:
     fn simd_accumulate(a: &[Self; LANES], b: &[Self; LANES], accumulator: &mut Self::Vector) {
         let a_simd = Self::Vector::from_array(a);
         let b_simd = Self::Vector::from_array(b);
-        *accumulator = a_simd.mul_add(b_simd, *accumulator);
+        *accumulator = a_simd.multiply(b_simd).add(*accumulator);
     }
 
     fn binary_sum(accumulators: [Self::Vector; ACCUMULATORS]) -> Self::Vector;

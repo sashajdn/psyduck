@@ -37,7 +37,7 @@ pub trait ModelBackend<F: QuantizedFp> {
     fn alloc<const R: usize>(&self, shape: Shape<R>) -> Result<Self::Tensor<R>, ModelError>;
 
     /// Performs matrix multiplication of two rank-2 tensors and stores the result in the target tensor.
-    fn try_matmul(
+    fn try_matmul<const TM: usize, const TN: usize, const TK: usize>(
         &self,
         a: &Self::Tensor<2>,
         b: &Self::Tensor<2>,
