@@ -93,7 +93,7 @@ impl ModelBackend<f32> for CudaModelBackend<f32> {
         Ok(CudaTensor::from_cuda_slice(buffer, shape)?)
     }
 
-    fn try_matmul(
+    fn try_matmul<const _TM: usize, const _TN: usize, const _TK: usize>(
         &self,
         a: &Self::Tensor<2>,
         b: &Self::Tensor<2>,

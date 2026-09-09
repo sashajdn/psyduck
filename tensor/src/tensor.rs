@@ -11,24 +11,27 @@ pub trait Tensor<F, const R: usize> {
 
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
 #[error("tensor element count mismatch: expected {expected}, actual {actual}")]
-pub struct ElementCountMismatch {
+pub struct ElementCountMismatchError {
     pub expected: usize,
     pub actual: usize,
 }
 
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
 #[error("tensor shape mismatch: lhs {lhs:?}, rhs {rhs:?}")]
-pub struct ShapeMismatch {
+pub struct ShapeMismatchError {
     pub lhs: Vec<usize>,
     pub rhs: Vec<usize>,
 }
 
 pub trait MatrixTensor<F>: Tensor<F, 2> {
     #[inline]
-    fn validate_matmul_shape_with<T: Tensor<F, 2>>(&self, rhs: &T) -> Result<(), ShapeMismatch> {
-        (self.shape().cols() == rhs.shape().rows())
+    fn validate_matmul_shape_with<T: Tensor<F, 2>>(
+        &self,
+        rhs: &T,
+    ) -> Result<(), ShapeMismatchError> {
+        (self.shape().columns() == rhs.shape().rows())
             .then_some(())
-            .ok_or_else(|| ShapeMismatch {
+            .ok_or_else(|| ShapeMismatchError {
                 lhs: self.shape().dims().to_vec(),
                 rhs: rhs.shape().dims().to_vec(),
             })
@@ -39,27 +42,27 @@ pub trait MatrixTensor<F>: Tensor<F, 2> {
         &self,
         rhs: &Rhs,
         target: &Target,
-    ) -> Result<(), ShapeMismatch>
+    ) -> Result<(), ShapeMismatchError>
     where
         Rhs: Tensor<F, 2>,
         Target: Tensor<F, 2>,
     {
         self.validate_matmul_shape_with(rhs)?;
 
-        let expected = [self.shape().rows(), rhs.shape().cols()];
+        let expected = [self.shape().rows(), rhs.shape().columns()];
         (target.shape().dims() == &expected)
             .then_some(())
-            .ok_or_else(|| ShapeMismatch {
+            .ok_or_else(|| ShapeMismatchError {
                 lhs: expected.to_vec(),
                 rhs: target.shape().dims().to_vec(),
             })
     }
 
     #[inline]
-    fn validate_add_shape_with<T: Tensor<F, 2>>(&self, rhs: &T) -> Result<(), ShapeMismatch> {
+    fn validate_add_shape_with<T: Tensor<F, 2>>(&self, rhs: &T) -> Result<(), ShapeMismatchError> {
         (self.shape().dims() == rhs.shape().dims())
             .then_some(())
-            .ok_or_else(|| ShapeMismatch {
+            .ok_or_else(|| ShapeMismatchError {
                 lhs: self.shape().dims().to_vec(),
                 rhs: rhs.shape().dims().to_vec(),
             })
@@ -113,7 +116,7 @@ mod tests {
         assert_eq!(lhs.validate_matmul_shape_with(&compatible_rhs), Ok(()));
         assert_eq!(
             lhs.validate_matmul_shape_with(&incompatible_rhs),
-            Err(ShapeMismatch {
+            Err(ShapeMismatchError {
                 lhs: vec![2, 3],
                 rhs: vec![4, 3],
             })
@@ -133,7 +136,7 @@ mod tests {
         );
         assert_eq!(
             lhs.validate_matmul_target_with(&rhs, &incompatible_target),
-            Err(ShapeMismatch {
+            Err(ShapeMismatchError {
                 lhs: vec![2, 4],
                 rhs: vec![4, 2],
             })

@@ -104,9 +104,9 @@ matmul target="host" m="512" n="" k="" report_dir="" operations="1" warmup="3" s
 
     for dimension in "${m}" "${n}" "${k}"; do
         case "${dimension}" in
-            4|8|16|32|64|128|256|512|1024|2048|4096) ;;
+            4|8|16|32|64|128|256|512|1024|2048|4096|8192) ;;
             *)
-                echo "unsupported matrix dimension: ${dimension} (expected 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, or 4096)" >&2
+                echo "unsupported matrix dimension: ${dimension} (expected 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, or 8192)" >&2
                 exit 2
                 ;;
         esac
@@ -187,9 +187,9 @@ matmul-perf m="512" cpu_list="2" n="" k="" report_dir="" operations="1" warmup="
 
     for dimension in "${m}" "${n}" "${k}"; do
         case "${dimension}" in
-            4|8|16|32|64|128|256|512|1024|2048|4096) ;;
+            4|8|16|32|64|128|256|512|1024|2048|4096|8192) ;;
             *)
-                echo "unsupported matrix dimension: ${dimension} (expected 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, or 4096)" >&2
+                echo "unsupported matrix dimension: ${dimension} (expected 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, or 8192)" >&2
                 exit 2
                 ;;
         esac

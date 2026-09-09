@@ -5,7 +5,7 @@ use tensor::{HostTensor, QuantizedFp};
 pub type Seed = u64;
 
 pub const CANONICAL_SEED: Seed = 0x5053_5944_5543_4B01;
-pub const CANONICAL_MATMUL_CHECKSUMS: [(usize, f64); 11] = [
+pub const CANONICAL_MATMUL_CHECKSUMS: [(usize, f64); 12] = [
     (4, 5.818_115_234_375),
     (8, 9.721_069_335_937_5),
     (16, -2.028_442_382_812_5),
@@ -17,6 +17,7 @@ pub const CANONICAL_MATMUL_CHECKSUMS: [(usize, f64); 11] = [
     (1_024, 1_308.468_261_718_75),
     (2_048, 129_273.643_493_652_34),
     (4_096, 939_875.690_734_863_3),
+    (8_192, 8_527_309.422_851_563),
 ];
 
 pub fn canonical_matmul_checksum(size: usize) -> Option<f64> {
@@ -57,7 +58,7 @@ pub enum GeneratorError {
     #[error("matrix dimensions overflow: {rows} x {columns}")]
     DimensionOverflow { rows: usize, columns: usize },
     #[error(transparent)]
-    ElementCountMismatch(#[from] tensor::ElementCountMismatch),
+    ElementCountMismatch(#[from] tensor::ElementCountMismatchError),
 }
 
 impl Generator {

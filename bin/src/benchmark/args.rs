@@ -43,6 +43,8 @@ pub enum MatrixSize {
     N2048,
     #[value(name = "4096")]
     N4096,
+    #[value(name = "8192")]
+    N8192,
 }
 
 impl MatrixSize {
@@ -59,6 +61,7 @@ impl MatrixSize {
             Self::N1024 => 1024,
             Self::N2048 => 2048,
             Self::N4096 => 4096,
+            Self::N8192 => 8192,
         }
     }
 }

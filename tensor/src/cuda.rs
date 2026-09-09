@@ -1,6 +1,6 @@
 use cudarc::driver::{CudaSlice, DeviceRepr};
 
-use crate::{ElementCountMismatch, Shape, Tensor};
+use crate::{ElementCountMismatchError, Shape, Tensor};
 
 pub struct CudaBuffer<F: DeviceRepr> {
     buffer: CudaSlice<F>,
@@ -43,12 +43,12 @@ impl<F: DeviceRepr, const R: usize> CudaTensor<F, R> {
     pub fn from_cuda_slice(
         buffer: CudaSlice<F>,
         shape: Shape<R>,
-    ) -> Result<Self, ElementCountMismatch> {
+    ) -> Result<Self, ElementCountMismatchError> {
         let expected = shape.numel();
         let actual = buffer.len();
 
         if actual != expected {
-            return Err(ElementCountMismatch { expected, actual });
+            return Err(ElementCountMismatchError { expected, actual });
         }
 
         Ok(Self {
@@ -76,7 +76,7 @@ impl<F: DeviceRepr> CudaTensor<F, 2> {
 
     #[inline]
     pub fn cols(&self) -> usize {
-        self.shape().cols()
+        self.shape().columns()
     }
 }
 

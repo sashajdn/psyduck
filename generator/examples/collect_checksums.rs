@@ -1,6 +1,6 @@
 use generator::{CANONICAL_SEED, calculate_matmul_checksum};
 
-const SIZES: [usize; 11] = [4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096];
+const SIZES: [usize; 12] = [4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192];
 
 fn main() {
     for size in SIZES {

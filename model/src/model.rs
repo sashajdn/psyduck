@@ -5,15 +5,20 @@ pub enum ModelError {
     #[error(transparent)]
     Cuda(#[from] cudarc::driver::DriverError),
     #[error(transparent)]
-    ElementCountMismatch(#[from] tensor::ElementCountMismatch),
+    ElementCountMismatch(#[from] tensor::ElementCountMismatchError),
     #[error(transparent)]
-    ShapeMismatch(#[from] tensor::ShapeMismatch),
+    ShapeMismatch(#[from] tensor::ShapeMismatchError),
     #[error(transparent)]
     KernelError(#[from] kernel::KernelError),
     #[error("tensor is too large: {elements} elements")]
     TensorTooLarge { elements: usize },
     #[error("CUDA block dimensions must be non-zero, got ({x}, {y}, {z})")]
     InvalidCudaBlockDimensions { x: u32, y: u32, z: u32 },
+    #[error("tile shape {tile:?} must be non-zero and evenly divide matrix shape {matrix:?}")]
+    InvalidTileShape {
+        matrix: Vec<usize>,
+        tile: Vec<usize>,
+    },
     #[error(transparent)]
     MatrixError(#[from] tensor::MatrixError),
 }
@@ -37,7 +42,7 @@ pub trait ModelBackend<F: QuantizedFp> {
     fn alloc<const R: usize>(&self, shape: Shape<R>) -> Result<Self::Tensor<R>, ModelError>;
 
     /// Performs matrix multiplication of two rank-2 tensors and stores the result in the target tensor.
-    fn try_matmul(
+    fn try_matmul<const TM: usize, const TN: usize, const TK: usize>(
         &self,
         a: &Self::Tensor<2>,
         b: &Self::Tensor<2>,

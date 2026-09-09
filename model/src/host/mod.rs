@@ -1,12 +1,19 @@
-use std::time::{Duration, Instant};
+use std::{
+    ops::Deref,
+    time::{Duration, Instant},
+};
 
 use instrument::operation::{OperationTimer, TimingClock};
-use tensor::{HostTensor, MatrixTensor, Shape};
+use tensor::{HostTensor, MatrixTensor, Shape, Tensor};
 
 use crate::model::{ModelBackend, ModelError};
 
-use self::simd::{ACCUMULATORS, LANES, SimdDotProduct};
+use self::{
+    modifier::{Accumulate, OutputElementWiseModifier, Overwrite},
+    simd::{ACCUMULATORS, LANES, SimdDotProduct},
+};
 
+pub(crate) mod modifier;
 pub mod simd;
 pub mod stride;
 
@@ -74,33 +81,68 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBacken
         Ok(HostTensor::zeros(shape))
     }
 
-    fn try_matmul(
+    fn try_matmul<const TM: usize, const TN: usize, const TK: usize>(
         &self,
         a: &Self::Tensor<2>,
         b: &Self::Tensor<2>,
         c: &mut Self::Tensor<2>,
     ) -> Result<(), ModelError> {
+        // Validation.
         a.validate_matmul_target_with(b, c)?;
+
+        // Construct tile shapes for the inner matmul kernel.
+        let a_tile_shape = Shape::new([TM, TK]);
+        let mut b_tile_shape = Shape::new([TK, TN]);
+        let c_tile_shape = Shape::new([TM, TN]);
+
+        // And validate tile shapes.
+        Self::validate_tile_shapes(&a_tile_shape, &b_tile_shape, &c_tile_shape)?;
+        Self::validate_tile_fits(a.shape(), &a_tile_shape)?;
+        Self::validate_tile_fits(b.shape(), &b_tile_shape)?;
+        Self::validate_tile_fits(c.shape(), &c_tile_shape)?;
 
         // Transpose `b` for memory locality.
         //
-        // The k-stride over `b` is now contiguous given the
-        // underlying is a Vec<F>.
+        // The tiled k-stride over `b` is now contiguous given the
+        // underlying is a Vec<F> for all tiles.
+        //
+        // Additionally, tranpose the `b_tile_shape` inplace to reflect this.
         let mut b_transposed = b.clone();
         b_transposed.transpose()?;
+        b_tile_shape.transpose();
 
+        // Construct tiles for reuse.
+        let mut a_tile = self.alloc(a_tile_shape)?;
+        let mut b_tile = self.alloc(b_tile_shape)?;
+        let mut c_tile = self.alloc(c_tile_shape)?;
+
+        // Collect dimensionality.
+        let m = a.rows();
+        let n = b_transposed.rows();
         let k = a.columns();
-        for i in 0..a.rows() {
-            // Collect i-th row of `A`.
-            let a_row = &a.as_slice()[i * k..(i + 1) * k];
 
-            for j in 0..b_transposed.rows() {
-                // Collect j-th (transposed) row of `B`.
-                let b_row = &b_transposed.as_slice()[j * k..(j + 1) * k];
+        // Perform the matrix multiplication with tiling & a SIMD accelerated
+        // inner dot product over tiles.
+        for i in (0..m).step_by(TM) {
+            for j in (0..n).step_by(TN) {
+                for kk in (0..k).step_by(TK) {
+                    // Overwrite the preallocated resident tiles.
+                    a.copy_tile([i, kk], &mut a_tile)?;
+                    b_transposed.copy_tile([j, kk], &mut b_tile)?;
 
-                // Compute the dot product of the i-th row of `A` and the j-th row of `B`
-                // with SIMD acceleration across `ACCUMULATORS` SIMD registers.
-                c.set(i, j, F::simd_dot_product(a_row, b_row))?;
+                    // Perform the inner matmul kernel with SIMD acceleration over constructed tiles.
+                    self.try_matmul_kernel_inner::<Accumulate>(
+                        &a_tile,
+                        MaybeTransposedMatrix::transposed(&b_tile),
+                        &mut c_tile,
+                    )?;
+                }
+
+                // Write c_tile back to output.
+                c.write_tile([i, j], &c_tile)?;
+
+                // Zero tile of C{m, n} for C outputs.
+                c_tile.as_mut_slice().fill(F::zero());
             }
         }
 
@@ -132,6 +174,113 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBacken
     #[inline(always)]
     fn transpose(target: &mut Self::Tensor<2>) -> Result<(), ModelError> {
         target.transpose().map_err(Into::into)
+    }
+}
+
+enum MaybeTransposedMatrix<'a, F: SimdDotProduct<LANES, ACCUMULATORS>> {
+    NotTransposed(&'a mut HostTensor<F, 2>),
+    Transposed(&'a HostTensor<F, 2>),
+}
+
+impl<F: SimdDotProduct<LANES, ACCUMULATORS>> Deref for MaybeTransposedMatrix<'_, F> {
+    type Target = HostTensor<F, 2>;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::NotTransposed(matrix) => matrix,
+            Self::Transposed(matrix) => matrix,
+        }
+    }
+}
+
+impl<'a, F: SimdDotProduct<LANES, ACCUMULATORS>> MaybeTransposedMatrix<'a, F> {
+    #[inline(always)]
+    fn transposed(matrix: &'a HostTensor<F, 2>) -> Self {
+        Self::Transposed(matrix)
+    }
+
+    #[inline(always)]
+    fn not_transposed(matrix: &'a mut HostTensor<F, 2>) -> Self {
+        Self::NotTransposed(matrix)
+    }
+}
+
+impl<F: SimdDotProduct<LANES, ACCUMULATORS>> HostModelBackend<F> {
+    fn try_matmul_kernel_inner<Mod: OutputElementWiseModifier<F>>(
+        &self,
+        a_tile: &HostTensor<F, 2>,
+        b_tile: MaybeTransposedMatrix<F>,
+        c_tile: &mut HostTensor<F, 2>,
+    ) -> Result<(), ModelError> {
+        let b_transposed = match b_tile {
+            MaybeTransposedMatrix::NotTransposed(b) => {
+                b.transpose()?;
+                b
+            }
+            MaybeTransposedMatrix::Transposed(b_t) => b_t,
+        };
+
+        let k = a_tile.columns();
+        for i in 0..a_tile.rows() {
+            // Collect i-th row of `A`.
+            let a_row = &a_tile.as_slice()[i * k..(i + 1) * k];
+
+            for j in 0..b_transposed.rows() {
+                // Collect j-th (transposed) row of `B`.
+                let b_row = &b_transposed.as_slice()[j * k..(j + 1) * k];
+
+                // Compute the dot product of the i-th row of `A` and the j-th row of `B`
+                // with SIMD acceleration across `ACCUMULATORS` SIMD registers.
+                c_tile.with_mut(i, j, |current_value| {
+                    Mod::apply(current_value, F::simd_dot_product(a_row, b_row));
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_tile_shapes(a: &Shape<2>, b: &Shape<2>, c: &Shape<2>) -> Result<(), ModelError> {
+        if a.columns() != b.rows() {
+            return Err(tensor::ShapeMismatchError {
+                lhs: a.dims().to_vec(),
+                rhs: b.dims().to_vec(),
+            }
+            .into());
+        }
+
+        if a.rows() != c.rows() {
+            return Err(tensor::ShapeMismatchError {
+                lhs: a.dims().to_vec(),
+                rhs: c.dims().to_vec(),
+            }
+            .into());
+        }
+
+        if b.columns() != c.columns() {
+            return Err(tensor::ShapeMismatchError {
+                lhs: b.dims().to_vec(),
+                rhs: c.dims().to_vec(),
+            }
+            .into());
+        }
+
+        Ok(())
+    }
+
+    fn validate_tile_fits(matrix: &Shape<2>, tile: &Shape<2>) -> Result<(), ModelError> {
+        let tile_rows = tile.rows();
+        let tile_columns = tile.columns();
+        let fits = tile_rows != 0
+            && tile_columns != 0
+            && matrix.rows().is_multiple_of(tile_rows)
+            && matrix.columns().is_multiple_of(tile_columns);
+
+        fits.then_some(())
+            .ok_or_else(|| ModelError::InvalidTileShape {
+                matrix: matrix.dims().to_vec(),
+                tile: tile.dims().to_vec(),
+            })
     }
 }
 
@@ -175,16 +324,60 @@ mod tests {
         let mut target = HostTensor::zeros(Shape::new([2, 2]));
 
         backend
-            .try_matmul(&a, &b, &mut target)
+            .try_matmul::<1, 1, 1>(&a, &b, &mut target)
             .expect("2x2 matrices should be multipliable");
 
         assert_eq!(target.as_slice(), &[19.0, 22.0, 43.0, 50.0]);
 
         backend
-            .try_matmul(&a, &b, &mut target)
+            .try_matmul::<1, 1, 1>(&a, &b, &mut target)
             .expect("repeated matmul should overwrite its target");
 
         assert_eq!(target.as_slice(), &[19.0, 22.0, 43.0, 50.0]);
+    }
+
+    #[test]
+    fn tile_sizes_one_and_two_are_functionally_identical() {
+        const SIZE: usize = 16;
+        const ELEMENTS: usize = SIZE * SIZE;
+
+        let backend = HostModelBackend::<f32>::new();
+        let a = HostTensor::from_vec(
+            (0..ELEMENTS)
+                .map(|index| ((index * 17 + 3) % 29) as f32 / 16.0 - 0.875)
+                .collect(),
+            Shape::new([SIZE, SIZE]),
+        )
+        .expect("A should contain exactly SIZE squared elements");
+        let b = HostTensor::from_vec(
+            (0..ELEMENTS)
+                .map(|index| ((index * 11 + 7) % 31) as f32 / 16.0 - 0.9375)
+                .collect(),
+            Shape::new([SIZE, SIZE]),
+        )
+        .expect("B should contain exactly SIZE squared elements");
+        let mut tile_one = HostTensor::zeros(Shape::new([SIZE, SIZE]));
+        let mut tile_two = HostTensor::zeros(Shape::new([SIZE, SIZE]));
+
+        backend
+            .try_matmul::<1, 1, 1>(&a, &b, &mut tile_one)
+            .expect("1x1x1 tiled matmul should succeed");
+        backend
+            .try_matmul::<2, 2, 2>(&a, &b, &mut tile_two)
+            .expect("2x2x2 tiled matmul should succeed");
+
+        for (index, (&one, &two)) in tile_one
+            .as_slice()
+            .iter()
+            .zip(tile_two.as_slice())
+            .enumerate()
+        {
+            let tolerance = 1.0e-6 * one.abs().max(two.abs()).max(1.0);
+            assert!(
+                (one - two).abs() <= tolerance,
+                "tile outputs differ at element {index}: {one} != {two}"
+            );
+        }
     }
 
     #[test]
@@ -199,7 +392,7 @@ mod tests {
         b.as_mut_slice().copy_from_slice(&values);
 
         backend
-            .try_matmul(&a, &b, &mut target)
+            .try_matmul::<1, 1, 1>(&a, &b, &mut target)
             .expect("a full SIMD chunk and its remainder should be multipliable");
 
         assert_eq!(target.as_slice(), &[385.0]);
@@ -232,5 +425,65 @@ mod tests {
             .expect("3x2 matrix should be transposable");
         assert_eq!((rectangular.rows(), rectangular.columns()), (2, 3));
         assert_eq!(rectangular.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn correctly_ensure_valid_square_tile_shapes() {
+        let a_tile_shape = Shape::new([2, 2]);
+        let b_tile_shape = Shape::new([2, 2]);
+        let c_tile_shape = Shape::new([2, 2]);
+
+        HostModelBackend::<f32>::validate_tile_shapes(&a_tile_shape, &b_tile_shape, &c_tile_shape)
+            .expect("valid square tile shapes should be valid");
+    }
+
+    #[test]
+    fn correctly_guard_against_invalid_square_tile_shapes() {
+        let a_tile_shape = Shape::new([2, 2]);
+        let b_tile_shape = Shape::new([2, 2]);
+        let c_tile_shape = Shape::new([3, 3]);
+
+        HostModelBackend::<f32>::validate_tile_shapes(&a_tile_shape, &b_tile_shape, &c_tile_shape)
+            .expect_err("invalid square tile shapes should be invalid");
+    }
+
+    #[test]
+    fn correctly_ensure_valid_rectangular_tile_shapes() {
+        let a_tile_shape = Shape::new([2, 3]);
+        let b_tile_shape = Shape::new([3, 2]);
+        let c_tile_shape = Shape::new([2, 2]);
+
+        HostModelBackend::<f32>::validate_tile_shapes(&a_tile_shape, &b_tile_shape, &c_tile_shape)
+            .expect("valid rectangular tile shapes should be valid");
+    }
+
+    #[test]
+    fn correctly_guard_against_invalid_rectangular_tile_shapes() {
+        let a_tile_shape = Shape::new([3, 2]);
+        let b_tile_shape = Shape::new([3, 2]);
+        let c_tile_shape = Shape::new([2, 2]);
+
+        HostModelBackend::<f32>::validate_tile_shapes(&a_tile_shape, &b_tile_shape, &c_tile_shape)
+            .expect_err("invalid rectangular tile shapes should be invalid");
+    }
+
+    #[test]
+    fn correctly_ensures_tile_fits_matrix() {
+        let matrix_shape = Shape::new([128, 256]);
+        let tile_shape = Shape::new([32, 64]);
+
+        HostModelBackend::<f32>::validate_tile_fits(&matrix_shape, &tile_shape)
+            .expect("tile dimensions should evenly divide matrix dimensions");
+    }
+
+    #[test]
+    fn correctly_rejects_tile_that_does_not_fit_matrix() {
+        let matrix_shape = Shape::new([128, 256]);
+
+        HostModelBackend::<f32>::validate_tile_fits(&matrix_shape, &Shape::new([32, 48]))
+            .expect_err("tile dimensions should evenly divide matrix dimensions");
+
+        HostModelBackend::<f32>::validate_tile_fits(&matrix_shape, &Shape::new([0, 64]))
+            .expect_err("tile dimensions must be non-zero");
     }
 }

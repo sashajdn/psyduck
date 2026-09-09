@@ -6,7 +6,9 @@ mod tensor;
 pub use cuda::{CudaBuffer, CudaTensor};
 pub use host::HostTensor;
 pub use shape::Shape;
-pub use tensor::{ElementCountMismatch, MatrixTensor, QuantizedFp, ShapeMismatch, Tensor};
+pub use tensor::{
+    ElementCountMismatchError, MatrixTensor, QuantizedFp, ShapeMismatchError, Tensor,
+};
 
 #[derive(thiserror::Error, Debug)]
 pub enum MatrixError {
