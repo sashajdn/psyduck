@@ -44,10 +44,10 @@ impl<F: QuantizedFp, const R: usize> Tensor<F, R> for HostTensor<F, R> {
 }
 
 impl<F: QuantizedFp> HostTensor<F, 2> {
-    pub fn copy_tile(&self, origin: [usize; 2], shape: Shape<2>) -> Result<Self, MatrixError> {
+    pub fn copy_tile(&self, origin: [usize; 2], tile: &mut Self) -> Result<(), MatrixError> {
         let [row_start, column_start] = origin;
-        let rows = shape.rows();
-        let columns = shape.columns();
+        let rows = tile.rows();
+        let columns = tile.columns();
 
         row_start
             .checked_add(rows)
@@ -59,7 +59,6 @@ impl<F: QuantizedFp> HostTensor<F, 2> {
             .filter(|&column_end| column_end <= self.columns())
             .ok_or_else(|| MatrixError::OutOfBounds(self.shape().clone()))?;
 
-        let mut tile = Self::zeros(shape);
         for tile_row in 0..rows {
             let source_start = (row_start + tile_row) * self.columns() + column_start;
             let target_start = tile_row * columns;
@@ -68,7 +67,7 @@ impl<F: QuantizedFp> HostTensor<F, 2> {
                 .copy_from_slice(&self.as_slice()[source_start..source_start + columns]);
         }
 
-        Ok(tile)
+        Ok(())
     }
 
     pub fn write_tile(&mut self, origin: [usize; 2], tile: &Self) -> Result<(), MatrixError> {
@@ -215,9 +214,10 @@ mod tests {
             Shape::new([4, 5]),
         )
         .expect("source shape should match its elements");
+        let mut tile = HostTensor::zeros(Shape::new([2, 3]));
 
-        let tile = source
-            .copy_tile([1, 1], Shape::new([2, 3]))
+        source
+            .copy_tile([1, 1], &mut tile)
             .expect("tile should be within the source matrix");
 
         assert_eq!(tile.shape().dims(), &[2, 3]);
@@ -227,7 +227,8 @@ mod tests {
     #[test]
     fn rejects_a_tile_outside_the_source_matrix() {
         let source = HostTensor::<f32, 2>::zeros(Shape::new([4, 5]));
+        let mut tile = HostTensor::zeros(Shape::new([2, 2]));
 
-        assert!(source.copy_tile([3, 4], Shape::new([2, 2])).is_err());
+        assert!(source.copy_tile([3, 4], &mut tile).is_err());
     }
 }

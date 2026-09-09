@@ -14,6 +14,11 @@ pub enum ModelError {
     TensorTooLarge { elements: usize },
     #[error("CUDA block dimensions must be non-zero, got ({x}, {y}, {z})")]
     InvalidCudaBlockDimensions { x: u32, y: u32, z: u32 },
+    #[error("tile shape {tile:?} must be non-zero and evenly divide matrix shape {matrix:?}")]
+    InvalidTileShape {
+        matrix: Vec<usize>,
+        tile: Vec<usize>,
+    },
     #[error(transparent)]
     MatrixError(#[from] tensor::MatrixError),
 }

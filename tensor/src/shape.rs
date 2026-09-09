@@ -18,6 +18,11 @@ impl<const R: usize> Shape<R> {
     pub fn numel(&self) -> usize {
         self.dims.iter().product()
     }
+
+    #[inline(always)]
+    pub fn transpose(&mut self) {
+        self.dims.reverse();
+    }
 }
 
 impl Shape<2> {
