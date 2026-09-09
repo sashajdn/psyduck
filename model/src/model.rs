@@ -5,9 +5,9 @@ pub enum ModelError {
     #[error(transparent)]
     Cuda(#[from] cudarc::driver::DriverError),
     #[error(transparent)]
-    ElementCountMismatch(#[from] tensor::ElementCountMismatch),
+    ElementCountMismatch(#[from] tensor::ElementCountMismatchError),
     #[error(transparent)]
-    ShapeMismatch(#[from] tensor::ShapeMismatch),
+    ShapeMismatch(#[from] tensor::ShapeMismatchError),
     #[error(transparent)]
     KernelError(#[from] kernel::KernelError),
     #[error("tensor is too large: {elements} elements")]

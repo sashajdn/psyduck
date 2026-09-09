@@ -57,7 +57,7 @@ pub enum GeneratorError {
     #[error("matrix dimensions overflow: {rows} x {columns}")]
     DimensionOverflow { rows: usize, columns: usize },
     #[error(transparent)]
-    ElementCountMismatch(#[from] tensor::ElementCountMismatch),
+    ElementCountMismatch(#[from] tensor::ElementCountMismatchError),
 }
 
 impl Generator {

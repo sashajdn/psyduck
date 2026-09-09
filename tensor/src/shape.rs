@@ -27,7 +27,7 @@ impl Shape<2> {
     }
 
     #[inline]
-    pub const fn cols(&self) -> usize {
+    pub const fn columns(&self) -> usize {
         self.dims[1]
     }
 }

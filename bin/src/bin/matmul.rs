@@ -157,10 +157,7 @@ where
     type Error = ModelError;
 
     fn execute(&mut self, backend: &B) -> Result<(), Self::Error> {
-        // TODO: Add a backend zero/fill operation and reset C before every
-        // iteration when benchmarking matmul kernels that accumulate into the
-        // existing target instead of overwriting it.
-        backend.try_matmul(self.a, self.b, self.output)
+        backend.try_matmul::<32, 32, 64>(self.a, self.b, self.output)
     }
 
     fn output_sum(&self, backend: &B) -> Result<f64, Self::Error> {

@@ -1,4 +1,4 @@
-use crate::{ElementCountMismatch, MatrixError, QuantizedFp, Shape, Tensor};
+use crate::{ElementCountMismatchError, MatrixError, QuantizedFp, Shape, Tensor};
 
 #[derive(Clone)]
 pub struct HostTensor<F, const R: usize> {
@@ -8,12 +8,12 @@ pub struct HostTensor<F, const R: usize> {
 
 impl<F: QuantizedFp, const R: usize> HostTensor<F, R> {
     #[inline]
-    pub fn from_vec(inner: Vec<F>, shape: Shape<R>) -> Result<Self, ElementCountMismatch> {
+    pub fn from_vec(inner: Vec<F>, shape: Shape<R>) -> Result<Self, ElementCountMismatchError> {
         let expected = shape.numel();
         let actual = inner.len();
 
         if actual != expected {
-            return Err(ElementCountMismatch { expected, actual });
+            return Err(ElementCountMismatchError { expected, actual });
         }
 
         Ok(Self { inner, shape })
@@ -47,7 +47,7 @@ impl<F: QuantizedFp> HostTensor<F, 2> {
     pub fn copy_tile(&self, origin: [usize; 2], shape: Shape<2>) -> Result<Self, MatrixError> {
         let [row_start, column_start] = origin;
         let rows = shape.rows();
-        let columns = shape.cols();
+        let columns = shape.columns();
 
         row_start
             .checked_add(rows)
@@ -103,7 +103,7 @@ impl<F: QuantizedFp> HostTensor<F, 2> {
 
     #[inline]
     pub fn columns(&self) -> usize {
-        self.shape().cols()
+        self.shape().columns()
     }
 
     #[inline]
@@ -189,7 +189,7 @@ impl<F: QuantizedFp> HostTensor<F, 2> {
         f: impl FnOnce(&mut F),
     ) -> Result<(), MatrixError> {
         let shape = self.shape().clone();
-        let columns = shape.cols();
+        let columns = shape.columns();
 
         let value = x
             .checked_mul(columns)
