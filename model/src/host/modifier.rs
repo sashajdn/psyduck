@@ -1,4 +1,4 @@
-pub(crate) trait OutputElementWiseModifier<F> {
+pub trait OutputElementWiseModifier<F> {
     fn apply(target: &mut F, value: F);
 }
 

@@ -47,7 +47,7 @@ macro_rules! unrolled_simd_dot_product {
         // Handle complete SIMD chunks that fill the unrolled accumulator groups.
         for (a_group, b_group) in a_groups.iter().zip(b_groups.iter()) {
             $(
-                <Self as SimdDotProduct<LANES, $accumulators>>::simd_accumulate(
+                <Self as SimdDotProduct<LANES, $accumulators>>::accumulate_chunk(
                     &a_group[$index],
                     &b_group[$index],
                     &mut $accumulator,
@@ -59,7 +59,7 @@ macro_rules! unrolled_simd_dot_product {
         let mut remainder_accumulator =
             <Self::Vector as SimdVector<Self, LANES>>::splat(Self::zero());
         for (a_chunk, b_chunk) in a_chunk_remainder.iter().zip(b_chunk_remainder.iter()) {
-            <Self as SimdDotProduct<LANES, $accumulators>>::simd_accumulate(
+            <Self as SimdDotProduct<LANES, $accumulators>>::accumulate_chunk(
                 a_chunk,
                 b_chunk,
                 &mut remainder_accumulator,
@@ -74,7 +74,7 @@ macro_rules! unrolled_simd_dot_product {
             padded_a[..a_scalar_remainder.len()].copy_from_slice(a_scalar_remainder);
             padded_b[..b_scalar_remainder.len()].copy_from_slice(b_scalar_remainder);
 
-            <Self as SimdDotProduct<LANES, $accumulators>>::simd_accumulate(
+            <Self as SimdDotProduct<LANES, $accumulators>>::accumulate_chunk(
                 &padded_a,
                 &padded_b,
                 &mut remainder_accumulator,

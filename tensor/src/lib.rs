@@ -14,4 +14,6 @@ pub use tensor::{
 pub enum MatrixError {
     #[error("Matrix index out of bounds: {0:?}")]
     OutOfBounds(Shape<2>),
+    #[error("Invalid tile size: expected to be multiple of {0:?}, got: {1:?}")]
+    InvalidTileSize((usize, usize, usize), (usize, usize, usize)),
 }

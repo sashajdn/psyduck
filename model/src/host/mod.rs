@@ -1,7 +1,4 @@
-use std::{
-    ops::Deref,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use instrument::operation::{OperationTimer, TimingClock};
 use tensor::{HostTensor, MatrixTensor, Shape, Tensor};
@@ -10,7 +7,7 @@ use crate::model::{ModelBackend, ModelError};
 
 use self::{
     modifier::{Accumulate, OutputElementWiseModifier, Overwrite},
-    simd::{ACCUMULATORS, LANES, SimdDotProduct},
+    simd::{ACCUMULATORS, LANES, SimdDotProduct, tile::SimdMicroKernel},
 };
 
 pub(crate) mod modifier;
@@ -19,6 +16,19 @@ pub mod stride;
 
 pub struct HostModelBackend<F> {
     _phantom: std::marker::PhantomData<F>,
+}
+
+/// PreparedTiledMatmul holds the transposed version of matrix `B` and local tile
+/// buffers for matrices `A`, `B`, and `C`.
+struct PreparedTiledMatmul<F> {
+    /// The transposed version of matrix `B` to ensure locality during tiled matrix multiplication.
+    b_transposed: HostTensor<F, 2>,
+    /// Local tile buffers for matrices `A`.
+    a_tile: HostTensor<F, 2>,
+    /// Local tile buffers for matrices `B`.
+    b_tile: HostTensor<F, 2>,
+    /// Local tile buffers for matrices `C`.
+    c_tile: HostTensor<F, 2>,
 }
 
 impl<F> HostModelBackend<F> {
@@ -57,7 +67,10 @@ impl<F> OperationTimer for HostModelBackend<F> {
     }
 }
 
-impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBackend<F> {
+impl<F> ModelBackend<F> for HostModelBackend<F>
+where
+    F: SimdDotProduct<LANES, ACCUMULATORS> + SimdMicroKernel<LANES, ACCUMULATORS>,
+{
     type Tensor<const R: usize> = HostTensor<F, R>;
 
     #[inline]
@@ -90,63 +103,12 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBacken
         // Validation.
         a.validate_matmul_target_with(b, c)?;
 
-        // Construct tile shapes for the inner matmul kernel.
-        let a_tile_shape = Shape::new([TM, TK]);
-        let mut b_tile_shape = Shape::new([TK, TN]);
-        let c_tile_shape = Shape::new([TM, TN]);
-
-        // And validate tile shapes.
-        Self::validate_tile_shapes(&a_tile_shape, &b_tile_shape, &c_tile_shape)?;
-        Self::validate_tile_fits(a.shape(), &a_tile_shape)?;
-        Self::validate_tile_fits(b.shape(), &b_tile_shape)?;
-        Self::validate_tile_fits(c.shape(), &c_tile_shape)?;
-
-        // Transpose `b` for memory locality.
-        //
-        // The tiled k-stride over `b` is now contiguous given the
-        // underlying is a Vec<F> for all tiles.
-        //
-        // Additionally, tranpose the `b_tile_shape` inplace to reflect this.
-        let mut b_transposed = b.clone();
-        b_transposed.transpose()?;
-        b_tile_shape.transpose();
-
-        // Construct tiles for reuse.
-        let mut a_tile = self.alloc(a_tile_shape)?;
-        let mut b_tile = self.alloc(b_tile_shape)?;
-        let mut c_tile = self.alloc(c_tile_shape)?;
-
-        // Collect dimensionality.
-        let m = a.rows();
-        let n = b_transposed.rows();
-        let k = a.columns();
-
-        // Perform the matrix multiplication with tiling & a SIMD accelerated
-        // inner dot product over tiles.
-        for i in (0..m).step_by(TM) {
-            for j in (0..n).step_by(TN) {
-                for kk in (0..k).step_by(TK) {
-                    // Overwrite the preallocated resident tiles.
-                    a.copy_tile([i, kk], &mut a_tile)?;
-                    b_transposed.copy_tile([j, kk], &mut b_tile)?;
-
-                    // Perform the inner matmul kernel with SIMD acceleration over constructed tiles.
-                    self.try_matmul_kernel_inner::<Accumulate>(
-                        &a_tile,
-                        MaybeTransposedMatrix::transposed(&b_tile),
-                        &mut c_tile,
-                    )?;
-                }
-
-                // Write c_tile back to output.
-                c.write_tile([i, j], &c_tile)?;
-
-                // Zero tile of C{m, n} for C outputs.
-                c_tile.as_mut_slice().fill(F::zero());
-            }
+        // Dispatch once before entering either tiled loop nest.
+        if F::validate_tile_sizes(TM, TN, TK).is_ok() {
+            self.try_matmul_microkernel_tiled::<TM, TN, TK>(a, b, c)
+        } else {
+            self.try_matmul_dot_product_tiled::<TM, TN, TK>(a, b, c)
         }
-
-        Ok(())
     }
 
     #[inline]
@@ -177,49 +139,97 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> ModelBackend<F> for HostModelBacken
     }
 }
 
-enum MaybeTransposedMatrix<'a, F: SimdDotProduct<LANES, ACCUMULATORS>> {
-    NotTransposed(&'a mut HostTensor<F, 2>),
-    Transposed(&'a HostTensor<F, 2>),
-}
-
-impl<F: SimdDotProduct<LANES, ACCUMULATORS>> Deref for MaybeTransposedMatrix<'_, F> {
-    type Target = HostTensor<F, 2>;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::NotTransposed(matrix) => matrix,
-            Self::Transposed(matrix) => matrix,
-        }
-    }
-}
-
-impl<'a, F: SimdDotProduct<LANES, ACCUMULATORS>> MaybeTransposedMatrix<'a, F> {
-    #[inline(always)]
-    fn transposed(matrix: &'a HostTensor<F, 2>) -> Self {
-        Self::Transposed(matrix)
-    }
-
-    #[inline(always)]
-    fn not_transposed(matrix: &'a mut HostTensor<F, 2>) -> Self {
-        Self::NotTransposed(matrix)
-    }
-}
-
-impl<F: SimdDotProduct<LANES, ACCUMULATORS>> HostModelBackend<F> {
-    fn try_matmul_kernel_inner<Mod: OutputElementWiseModifier<F>>(
+impl<F> HostModelBackend<F>
+where
+    F: SimdDotProduct<LANES, ACCUMULATORS> + SimdMicroKernel<LANES, ACCUMULATORS>,
+{
+    /// Tiled matrix multiplication using a SIMD accelerated microkernel for the inner loop.
+    fn try_matmul_microkernel_tiled<const TM: usize, const TN: usize, const TK: usize>(
         &self,
+        a: &HostTensor<F, 2>,
+        b: &HostTensor<F, 2>,
+        c: &mut HostTensor<F, 2>,
+    ) -> Result<(), ModelError> {
+        // Prepare matrices for correctness & locality.
+        let PreparedTiledMatmul {
+            b_transposed,
+            mut a_tile,
+            mut b_tile,
+            mut c_tile,
+        } = self.prepare_tiled_matmul::<TM, TN, TK>(a, b, c)?;
+
+        for i in (0..a.rows()).step_by(TM) {
+            for j in (0..b_transposed.rows()).step_by(TN) {
+                // Copy the first tile of `A` and `B` into the local tile buffers.
+                a.copy_tile([i, 0], &mut a_tile)?;
+                b_transposed.copy_tile([j, 0], &mut b_tile)?;
+
+                // Compute the first tile of `C` using the microkernel.
+                // Overwrites on the first iteration.
+                F::matmul_microkernel::<Overwrite>(&a_tile, &b_tile, &mut c_tile)?;
+
+                // Accumulate on the following iterations.
+                for kk in (TK..a.columns()).step_by(TK) {
+                    a.copy_tile([i, kk], &mut a_tile)?;
+                    b_transposed.copy_tile([j, kk], &mut b_tile)?;
+                    F::matmul_microkernel::<Accumulate>(&a_tile, &b_tile, &mut c_tile)?;
+                }
+
+                // Write back the computed tile to the output matrix `C`.
+                c.write_tile([i, j], &c_tile)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Tiled matrix multiplication using SIMD accelerated dot product for the inner loop.
+    fn try_matmul_dot_product_tiled<const TM: usize, const TN: usize, const TK: usize>(
+        &self,
+        a: &HostTensor<F, 2>,
+        b: &HostTensor<F, 2>,
+        c: &mut HostTensor<F, 2>,
+    ) -> Result<(), ModelError> {
+        // Prepare matrices for correctness & locality.
+        let PreparedTiledMatmul {
+            b_transposed,
+            mut a_tile,
+            mut b_tile,
+            mut c_tile,
+        } = self.prepare_tiled_matmul::<TM, TN, TK>(a, b, c)?;
+
+        for i in (0..a.rows()).step_by(TM) {
+            for j in (0..b_transposed.rows()).step_by(TN) {
+                // Copy the first tile of `A` and `B` into the local tile buffers.
+                a.copy_tile([i, 0], &mut a_tile)?;
+                b_transposed.copy_tile([j, 0], &mut b_tile)?;
+
+                // Compute the dot product of the first tile of `A` and `B` into the local tile buffer for `C`.
+                // Overwrite on the first iteration.
+                Self::try_matmul_dot_product::<Overwrite>(&a_tile, &b_tile, &mut c_tile)?;
+
+                // Accumulate on the following iterations.
+                for kk in (TK..a.columns()).step_by(TK) {
+                    a.copy_tile([i, kk], &mut a_tile)?;
+                    b_transposed.copy_tile([j, kk], &mut b_tile)?;
+                    Self::try_matmul_dot_product::<Accumulate>(&a_tile, &b_tile, &mut c_tile)?;
+                }
+
+                // Write back the computed tile to the output matrix `C`.
+                c.write_tile([i, j], &c_tile)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Compute the dot product of two tiles of matrices `A` and `B` into a tile of matrix `C`,
+    /// with SIMD acceleration.
+    fn try_matmul_dot_product<Mod: OutputElementWiseModifier<F>>(
         a_tile: &HostTensor<F, 2>,
-        b_tile: MaybeTransposedMatrix<F>,
+        b_transposed: &HostTensor<F, 2>,
         c_tile: &mut HostTensor<F, 2>,
     ) -> Result<(), ModelError> {
-        let b_transposed = match b_tile {
-            MaybeTransposedMatrix::NotTransposed(b) => {
-                b.transpose()?;
-                b
-            }
-            MaybeTransposedMatrix::Transposed(b_t) => b_t,
-        };
-
         let k = a_tile.columns();
         for i in 0..a_tile.rows() {
             // Collect i-th row of `A`.
@@ -240,6 +250,40 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> HostModelBackend<F> {
         Ok(())
     }
 
+    /// Prepare the matrices for tiled matrix multiplication by validating tile shapes,
+    /// Ensure locality by transposing `B`, and allocating local tile buffers for `A`, `B`, and `C`.
+    fn prepare_tiled_matmul<const TM: usize, const TN: usize, const TK: usize>(
+        &self,
+        a: &HostTensor<F, 2>,
+        b: &HostTensor<F, 2>,
+        c: &HostTensor<F, 2>,
+    ) -> Result<PreparedTiledMatmul<F>, ModelError> {
+        let a_tile_shape = Shape::new([TM, TK]);
+        let mut b_tile_shape = Shape::new([TK, TN]);
+        let c_tile_shape = Shape::new([TM, TN]);
+
+        Self::validate_tile_shapes(&a_tile_shape, &b_tile_shape, &c_tile_shape)?;
+        Self::validate_tile_fits(a.shape(), &a_tile_shape)?;
+        Self::validate_tile_fits(b.shape(), &b_tile_shape)?;
+        Self::validate_tile_fits(c.shape(), &c_tile_shape)?;
+
+        let mut b_transposed = b.clone();
+        b_transposed.transpose()?;
+        b_tile_shape.transpose();
+
+        let a_tile = self.alloc(a_tile_shape)?;
+        let b_tile = self.alloc(b_tile_shape)?;
+        let c_tile = self.alloc(c_tile_shape)?;
+
+        Ok(PreparedTiledMatmul {
+            b_transposed,
+            a_tile,
+            b_tile,
+            c_tile,
+        })
+    }
+
+    /// Validate that the tile shapes for matrices `A`, `B`, and `C` are compatible for matrix multiplication.
     fn validate_tile_shapes(a: &Shape<2>, b: &Shape<2>, c: &Shape<2>) -> Result<(), ModelError> {
         if a.columns() != b.rows() {
             return Err(tensor::ShapeMismatchError {
@@ -268,6 +312,7 @@ impl<F: SimdDotProduct<LANES, ACCUMULATORS>> HostModelBackend<F> {
         Ok(())
     }
 
+    /// Validate that the tile shape fits evenly into the matrix shape for both rows and columns.
     fn validate_tile_fits(matrix: &Shape<2>, tile: &Shape<2>) -> Result<(), ModelError> {
         let tile_rows = tile.rows();
         let tile_columns = tile.columns();
